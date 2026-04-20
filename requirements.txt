@@ -1,0 +1,9 @@
+aiohttp
+loguru
+openpyxl
+pandas
+pydantic
+pydantic-settings
+python-dotenv
+tenacity
+ttkbootstrap
