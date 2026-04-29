@@ -16,7 +16,7 @@ import ttkbootstrap as ttk
 from loguru import logger
 
 from app.config import AppSettings, get_settings, save_settings
-from app.models import SerpRiverResult, WordstatResult, XmlRiverResult
+from app.models import SerpRiverResult, WordstatResult, XmlRiverDomainTopResult, XmlRiverResult
 from app.services.serpriver import SerpRiverClient
 from app.services.wordstat import WordstatClient
 from app.services.xmlriver import XmlRiverClient
@@ -24,6 +24,7 @@ from app.utils.autocomplete import ComboboxAutocomplete
 from app.utils.export import build_export_path, export_to_csv, export_to_xlsx
 from app.utils.io import read_csv_lines, read_xlsx_lines
 from app.utils.reference_data import load_reference_catalogs
+from app.version import APP_TITLE, APP_VERSION
 
 TREE_ERROR_TAG = "error"
 YANDEX_DOMAIN_VALUES = ("ru", "com", "ua", "com.tr", "by", "kz")
@@ -40,6 +41,7 @@ WORDSTAT_DEVICE_VALUES = (
 )
 WORDSTAT_PERIOD_VALUES = ("", "month", "week", "day")
 WORDSTAT_PAGETYPE_VALUES = ("words", "history")
+TOP_DOMAIN_DEPTH_VALUES = ("10", "20", "30", "40", "50")
 SERPRIVER_OUTPUT_FORMAT_VALUES = ("json", "xml")
 SORT_DIRECTION_VALUES = ("A -> Я / 1 -> 9", "Я -> A / 9 -> 1")
 COMBOBOX_MAX_VALUES = 200
@@ -85,7 +87,7 @@ class SeoParserApp:
 
         self.root = ttk.Window(
             themename="darkly",
-            title="SEO API Парсер VIKI",
+            title=APP_TITLE,
             size=(1420, 860),
             minsize=(1180, 720),
         )
@@ -107,6 +109,7 @@ class SeoParserApp:
         self.is_google_xml_running = False
         self.is_yandex_xml_running = False
         self.is_wordstat_running = False
+        self.is_top_domain_running = False
         self.is_serpriver_running = False
 
         self.xmlriver_user_var = tk.StringVar(value=self.settings.xmlriver_user_id)
@@ -148,9 +151,22 @@ class SeoParserApp:
         self.wordstat_required_catalogs = ("yandex_geo",)
         self.is_wordstat_blocked = False
 
+        self.top_domain_target_var = tk.StringVar(value="")
+        self.top_domain_lr_var = tk.StringVar(
+            value=self._get_saved_reference_label("yandex_geo", self.settings.yandex_last_region_label),
+        )
+        self.top_domain_search_domain_var = tk.StringVar(value="ru")
+        self.top_domain_lang_var = tk.StringVar(value="ru")
+        self.top_domain_device_var = tk.StringVar(value="desktop")
+        self.top_domain_depth_var = tk.StringVar(value="10")
+        self.top_domain_controls: list[tuple[tk.Widget, str]] = []
+        self.top_domain_required_catalogs = ("yandex_geo",)
+        self.is_top_domain_blocked = False
+
         self.google_results: list[XmlRiverResult] = []
         self.yandex_results: list[XmlRiverResult] = []
         self.wordstat_results: list[WordstatResult] = []
+        self.top_domain_results: list[XmlRiverDomainTopResult] = []
         self.serpriver_results: list[SerpRiverResult] = []
         self.serpriver_raw_response = ""
 
@@ -163,6 +179,9 @@ class SeoParserApp:
         self.wordstat_filter_var = tk.StringVar(value="")
         self.wordstat_sort_var = tk.StringVar(value="query")
         self.wordstat_sort_direction_var = tk.StringVar(value=SORT_DIRECTION_VALUES[0])
+        self.top_domain_filter_var = tk.StringVar(value="")
+        self.top_domain_sort_var = tk.StringVar(value="query")
+        self.top_domain_sort_direction_var = tk.StringVar(value=SORT_DIRECTION_VALUES[0])
         self.serpriver_key_var = tk.StringVar(value=self.settings.serpriver_api_key)
         self.serpriver_engine_var = tk.StringVar(value="yandex")
         self.serpriver_domain_var = tk.StringVar(value="yandex.ru")
@@ -191,7 +210,7 @@ class SeoParserApp:
         self._build_xmlriver_tab()
         self._build_serpriver_tab()
 
-        self.status_var = tk.StringVar(value="Готов к работе")
+        self.status_var = tk.StringVar(value=f"Готов к работе | v{APP_VERSION}")
         status_bar = ttk.Frame(self.root)
         status_bar.pack(fill="x", side="bottom")
         tk.Frame(status_bar, height=2, bg=ACCENT_COLOR).pack(fill="x")
@@ -488,14 +507,17 @@ class SeoParserApp:
         self.google_frame = ttk.Frame(self.xmlriver_notebook)
         self.yandex_frame = ttk.Frame(self.xmlriver_notebook)
         self.wordstat_frame = ttk.Frame(self.xmlriver_notebook)
+        self.top_domain_frame = ttk.Frame(self.xmlriver_notebook)
 
         self.xmlriver_notebook.add(self.google_frame, text="  Google  ")
         self.xmlriver_notebook.add(self.yandex_frame, text="  Yandex  ")
         self.xmlriver_notebook.add(self.wordstat_frame, text="  Wordstat  ")
+        self.xmlriver_notebook.add(self.top_domain_frame, text="  Трекер позиций домена  ")
 
         self._build_google_tab()
         self._build_yandex_tab()
         self._build_wordstat_tab()
+        self._build_top_domain_tab()
 
     # ── Подвкладка Google ──
 
@@ -744,6 +766,123 @@ class SeoParserApp:
             self._register_control(self.wordstat_controls, widget)
         self._apply_catalog_requirements(
             self.wordstat_warning_label, self.wordstat_controls, self.wordstat_required_catalogs, "wordstat",
+        )
+
+    # ── Подвкладка Трекер позиций домена ──
+
+    def _build_top_domain_tab(self) -> None:
+        """Создает подвкладку трекера позиций домена в Yandex."""
+        self.top_domain_warning_label = ttk.Label(self.top_domain_frame, text="", bootstyle="danger")
+        self.top_domain_warning_label.pack(anchor="w", pady=(0, 6))
+
+        params_frame = ttk.LabelFrame(self.top_domain_frame, text="Параметры проверки домена")
+        params_frame.pack(fill="x")
+        ttk.Label(params_frame, text="Домен").grid(row=0, column=0, sticky="w")
+        self.top_domain_target_entry = ttk.Entry(params_frame, textvariable=self.top_domain_target_var, width=28)
+        self.top_domain_target_entry.grid(row=0, column=1, padx=(8, 14), sticky="we")
+        self._register_control(self.top_domain_controls, self.top_domain_target_entry)
+        self.top_domain_lr_combo = self._add_reference_combobox(
+            params_frame,
+            "Регион",
+            self.top_domain_lr_var,
+            "yandex_geo",
+            0,
+            2,
+            28,
+            self.top_domain_controls,
+            searchable=True,
+        )
+        self.top_domain_search_domain_combo = self._add_static_combobox(
+            params_frame,
+            "Домен Яндекса",
+            self.top_domain_search_domain_var,
+            YANDEX_DOMAIN_VALUES,
+            1,
+            0,
+            16,
+            self.top_domain_controls,
+            searchable=True,
+        )
+        ttk.Label(params_frame, text="Язык").grid(row=1, column=2, sticky="w")
+        self.top_domain_lang_entry = ttk.Entry(params_frame, textvariable=self.top_domain_lang_var, width=16)
+        self.top_domain_lang_entry.grid(row=1, column=3, padx=(8, 14), sticky="we")
+        self._register_control(self.top_domain_controls, self.top_domain_lang_entry)
+        self.top_domain_device_combo = self._add_static_combobox(
+            params_frame,
+            "Устройство",
+            self.top_domain_device_var,
+            DEVICE_VALUES,
+            2,
+            0,
+            16,
+            self.top_domain_controls,
+            searchable=True,
+        )
+        self.top_domain_depth_combo = self._add_static_combobox(
+            params_frame,
+            "Глубина",
+            self.top_domain_depth_var,
+            TOP_DOMAIN_DEPTH_VALUES,
+            2,
+            2,
+            16,
+            self.top_domain_controls,
+            searchable=False,
+        )
+
+        input_frame, results_frame = self._build_resizable_sections(self.top_domain_frame)
+        self.top_domain_queries_text = tk.Text(input_frame, height=6, wrap="word", bg="#2b3e50", fg="white",
+                                               insertbackground="white", selectbackground=ACCENT_COLOR, font=APP_FONT)
+        self.top_domain_queries_text.pack(fill="both", expand=True)
+        self._bind_query_text_shortcuts(self.top_domain_queries_text)
+
+        actions_frame = ttk.Frame(input_frame)
+        actions_frame.pack(fill="x", pady=(8, 0))
+        self.top_domain_import_csv_button = ttk.Button(
+            actions_frame, text="Импорт CSV", command=self._import_top_domain_csv, bootstyle="secondary-outline",
+        )
+        self.top_domain_import_csv_button.pack(side="left")
+        self.top_domain_import_xlsx_button = ttk.Button(
+            actions_frame, text="Импорт XLSX", command=self._import_top_domain_xlsx, bootstyle="secondary-outline",
+        )
+        self.top_domain_import_xlsx_button.pack(side="left", padx=(8, 0))
+        self.top_domain_start_button = ttk.Button(
+            actions_frame, text="▶  Запустить", command=self._start_top_domain_xmlriver, bootstyle="warning",
+        )
+        self.top_domain_start_button.pack(side="left", padx=(16, 0))
+        self.top_domain_export_csv_button = ttk.Button(
+            actions_frame, text="Экспорт CSV", command=self._export_top_domain_csv, bootstyle="info-outline",
+        )
+        self.top_domain_export_csv_button.pack(side="right")
+        self.top_domain_export_xlsx_button = ttk.Button(
+            actions_frame, text="Экспорт XLSX", command=self._export_top_domain_xlsx, bootstyle="info-outline",
+        )
+        self.top_domain_export_xlsx_button.pack(side="right", padx=(0, 8))
+
+        progress_frame = ttk.Frame(self.top_domain_frame)
+        progress_frame.pack(fill="x", pady=(10, 0))
+        ttk.Label(progress_frame, text="Прогресс обработки").pack(anchor="w")
+        self.top_domain_progress = ttk.Progressbar(progress_frame, mode="determinate", maximum=1, value=0, bootstyle="warning-striped")
+        self.top_domain_progress.pack(fill="x", pady=(4, 0))
+
+        self._build_result_tools(
+            results_frame, self.top_domain_filter_var, self.top_domain_sort_var, self.top_domain_sort_direction_var,
+            ("query", "position", "url", "domain"), self._apply_top_domain_view, "top_domain",
+        )
+        self.top_domain_tree = self._build_scrolled_tree(
+            results_frame,
+            ("query", "position", "url", "domain"),
+            (("query", "Запрос"), ("position", "Позиция"), ("url", "URL"), ("domain", "Домен")),
+        )
+
+        self._register_control(self.top_domain_controls, self.top_domain_queries_text, "normal")
+        for widget in (
+            self.top_domain_import_csv_button, self.top_domain_import_xlsx_button, self.top_domain_start_button,
+            self.top_domain_export_csv_button, self.top_domain_export_xlsx_button,
+        ):
+            self._register_control(self.top_domain_controls, widget)
+        self._apply_catalog_requirements(
+            self.top_domain_warning_label, self.top_domain_controls, self.top_domain_required_catalogs, "top_domain",
         )
 
     # ── Вкладка SERPRiver ──
@@ -1147,6 +1286,8 @@ class SeoParserApp:
             self.is_google_blocked = True
         elif tab_name == "yandex":
             self.is_yandex_blocked = True
+        elif tab_name == "top_domain":
+            self.is_top_domain_blocked = True
         else:
             self.is_wordstat_blocked = True
 
@@ -1244,6 +1385,12 @@ class SeoParserApp:
     def _import_wordstat_xlsx(self) -> None:
         self._load_text_rows(self.wordstat_queries_text, "xlsx")
 
+    def _import_top_domain_csv(self) -> None:
+        self._load_text_rows(self.top_domain_queries_text, "csv")
+
+    def _import_top_domain_xlsx(self) -> None:
+        self._load_text_rows(self.top_domain_queries_text, "xlsx")
+
     def _import_serpriver_csv(self) -> None:
         self._load_text_rows(self.serpriver_queries_text, "csv")
 
@@ -1286,6 +1433,12 @@ class SeoParserApp:
 
     def _export_wordstat_xlsx(self) -> None:
         self._export_tree_rows(self.wordstat_tree, "export_xmlriver_wordstat", "xlsx")
+
+    def _export_top_domain_csv(self) -> None:
+        self._export_tree_rows(self.top_domain_tree, "export_xmlriver_domain_top", "csv")
+
+    def _export_top_domain_xlsx(self) -> None:
+        self._export_tree_rows(self.top_domain_tree, "export_xmlriver_domain_top", "xlsx")
 
     def _export_serpriver_raw_response(self) -> None:
         """Экспортирует сырой ответ SERPRiver в выбранном формате."""
@@ -1368,6 +1521,18 @@ class SeoParserApp:
         sorted_results = self._sort_results(filtered_results, self.wordstat_sort_var.get(), self.wordstat_sort_direction_var.get())
         for result in sorted_results:
             self._insert_wordstat_result(result)
+
+    def _apply_top_domain_view(self) -> None:
+        """Применяет фильтр и сортировку к результатам трекера позиций домена."""
+        self._clear_tree(self.top_domain_tree)
+        filtered_results = self._filter_results(self.top_domain_results, self.top_domain_filter_var.get())
+        sorted_results = self._sort_results(
+            filtered_results,
+            self.top_domain_sort_var.get(),
+            self.top_domain_sort_direction_var.get(),
+        )
+        for result in sorted_results:
+            self._insert_top_domain_result(result)
 
     def _apply_serpriver_view(self) -> None:
         """Показывает в кодовом поле последний сырой ответ SERPRiver."""
@@ -1475,6 +1640,27 @@ class SeoParserApp:
             lambda future: self._handle_wordstat_completion(future, len(queries)),
         )
 
+    def _start_top_domain_xmlriver(self) -> None:
+        """Запускает трекер позиций домена в Yandex XMLRiver."""
+        if self.is_top_domain_blocked or self.is_top_domain_running:
+            return
+        try:
+            queries = self._read_queries(self.top_domain_queries_text)
+            target_domain = self._require_value(self.top_domain_target_var.get(), "Введите домен для проверки")
+            params = self._collect_top_domain_params()
+        except ValueError as error:
+            messagebox.showerror("Ошибка проверки домена", str(error))
+            return
+
+        self.is_top_domain_running = True
+        self._set_controls_state(self.xml_shared_controls + self.top_domain_controls, disabled=True)
+        self._prepare_run(self.top_domain_tree, self.top_domain_progress, len(queries))
+        self._set_status(f"Трекер позиций домена: обработка {len(queries)} запросов...")
+        self._submit_background_task(
+            self._run_top_domain_requests(queries, target_domain, params),
+            lambda future: self._handle_top_domain_completion(future, len(queries)),
+        )
+
     def _start_serpriver(self) -> None:
         """Запускает SERPRiver."""
         if self.is_serpriver_running:
@@ -1508,6 +1694,8 @@ class SeoParserApp:
             self.yandex_results = []
         elif tree is self.wordstat_tree:
             self.wordstat_results = []
+        elif tree is self.top_domain_tree:
+            self.top_domain_results = []
         else:
             self.serpriver_results = []
             self.serpriver_raw_response = ""
@@ -1555,6 +1743,27 @@ class SeoParserApp:
         return await client.fetch_queries(
             queries=queries, params=params,
             progress_callback=lambda completed, total, query: self._queue_progress_update(self.wordstat_progress, completed, total),
+        )
+
+    async def _run_top_domain_requests(
+        self,
+        queries: list[str],
+        target_domain: str,
+        params: dict[str, str],
+    ) -> list[XmlRiverDomainTopResult]:
+        """Выполняет трекер позиций домена в Yandex XMLRiver."""
+        client = XmlRiverClient(
+            user_id=self.xmlriver_user_var.get().strip(),
+            api_key=self.xmlriver_key_var.get().strip(),
+            connect_timeout=self.settings.request_connect_timeout,
+            read_timeout=self.settings.request_read_timeout,
+            max_concurrency=self.settings.xmlriver_max_concurrency,
+        )
+        return await client.fetch_domain_top_queries(
+            queries=queries,
+            target_domain=target_domain,
+            params=params,
+            progress_callback=lambda completed, total, query: self._queue_progress_update(self.top_domain_progress, completed, total),
         )
 
     async def _run_serpriver_requests(
@@ -1631,6 +1840,23 @@ class SeoParserApp:
         self._set_status(f"Wordstat: завершено, строк: {len(results)}")
         messagebox.showinfo("Wordstat", f"Обработка завершена. Строк: {len(results)}")
 
+    def _handle_top_domain_completion(self, future: Future, total: int) -> None:
+        """Завершает цикл трекера позиций домена."""
+        self.is_top_domain_running = False
+        self._restore_xml_control_sets(self.top_domain_controls)
+        try:
+            results = future.result()
+        except Exception as error:  # noqa: BLE001
+            logger.error("Domain top XMLRiver failed | error={}", str(error))
+            self._set_status("Трекер позиций домена: ошибка")
+            messagebox.showerror("Ошибка проверки домена", str(error))
+            return
+        self.top_domain_results = results
+        self._apply_top_domain_view()
+        self.top_domain_progress.configure(value=max(total, 1))
+        self._set_status(f"Трекер позиций домена: завершено, строк: {len(results)}")
+        messagebox.showinfo("Трекер позиций домена", f"Обработка завершена. Строк: {len(results)}")
+
     def _handle_serpriver_completion(self, future: Future, total: int) -> None:
         """Завершает цикл SERPRiver."""
         self.is_serpriver_running = False
@@ -1659,6 +1885,8 @@ class SeoParserApp:
             self._set_controls_state(self.yandex_controls, disabled=True)
         if self.is_wordstat_blocked:
             self._set_controls_state(self.wordstat_controls, disabled=True)
+        if self.is_top_domain_blocked:
+            self._set_controls_state(self.top_domain_controls, disabled=True)
 
     # ── Утилиты UI ──
 
@@ -1730,6 +1958,17 @@ class SeoParserApp:
         tags = (TREE_ERROR_TAG,) if result.error_code else ()
         self.wordstat_tree.insert("", "end", values=values, tags=tags)
 
+    def _insert_top_domain_result(self, result: XmlRiverDomainTopResult) -> None:
+        """Добавляет строку трекера позиций домена."""
+        values = (
+            result.query,
+            result.position or ("Ошибка" if result.error_code else ""),
+            result.url or result.error_code,
+            result.domain or result.error_message,
+        )
+        tags = (TREE_ERROR_TAG,) if result.error_code else ()
+        self.top_domain_tree.insert("", "end", values=values, tags=tags)
+
     def _get_last_serpriver_raw_response(self, results: list[SerpRiverResult]) -> str:
         """Возвращает последний непустой сырой ответ SERPRiver."""
         for result in reversed(results):
@@ -1796,6 +2035,31 @@ class SeoParserApp:
             "pagetype": self._get_static_value(
                 self.wordstat_pagetype_var.get(), WORDSTAT_PAGETYPE_VALUES, "Выберите тип данных",
             ) or "words",
+        }
+
+    def _collect_top_domain_params(self) -> dict[str, str]:
+        """Собирает параметры трекера позиций домена в Yandex XMLRiver."""
+        self._require_xml_credentials()
+        depth = self._get_static_value(
+            self.top_domain_depth_var.get(),
+            TOP_DOMAIN_DEPTH_VALUES,
+            "Выберите глубину топа от 10 до 50",
+        )
+        return {
+            "engine": "yandex",
+            "groupby": depth,
+            "lr": self._get_reference_value("yandex_geo", self.top_domain_lr_var.get(), "Выберите регион"),
+            "domain": self._get_static_value(
+                self.top_domain_search_domain_var.get(),
+                YANDEX_DOMAIN_VALUES,
+                "Выберите домен Яндекса",
+            ),
+            "lang": self._require_value(self.top_domain_lang_var.get(), "Введите язык"),
+            "device": self._get_static_value(
+                self.top_domain_device_var.get(),
+                DEVICE_VALUES,
+                "Выберите устройство",
+            ),
         }
 
     def _collect_serpriver_params(self) -> dict[str, str]:

@@ -12,8 +12,19 @@ if (-not (Test-Path $pythonPath)) {
 }
 
 $distPath = Join-Path $PSScriptRoot "dist"
+$bundlePath = Join-Path $distPath $ProjectName
+$bundleEnvPath = Join-Path $bundlePath ".env"
+$envBackupPath = $null
 $dataPath = Join-Path $PSScriptRoot "data"
 $envExamplePath = Join-Path $PSScriptRoot ".env.example"
+$updateDocsPath = Join-Path $PSScriptRoot "UPDATE.md"
+$updatePsPath = Join-Path $PSScriptRoot "update_portable.ps1"
+$updateCmdPath = Join-Path $PSScriptRoot "update_portable.cmd"
+
+if (Test-Path $bundleEnvPath) {
+    $envBackupPath = Join-Path ([System.IO.Path]::GetTempPath()) ("{0}_{1}.env" -f $ProjectName, [System.Guid]::NewGuid().ToString("N"))
+    Copy-Item $bundleEnvPath $envBackupPath -Force
+}
 
 if (-not (Test-Path $dataPath)) {
     Write-Error "Data directory not found: $dataPath"
@@ -93,7 +104,6 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$bundlePath = Join-Path $distPath $ProjectName
 $bundleDataPath = Join-Path $bundlePath "data"
 
 if (Test-Path $bundleDataPath) {
@@ -104,6 +114,23 @@ Copy-Item $dataPath $bundleDataPath -Recurse -Force
 
 if (Test-Path $envExamplePath) {
     Copy-Item $envExamplePath (Join-Path $bundlePath ".env.example") -Force
+}
+
+if ($envBackupPath -and (Test-Path $envBackupPath)) {
+    Copy-Item $envBackupPath $bundleEnvPath -Force
+    Remove-Item -LiteralPath $envBackupPath -Force
+}
+
+$version = & $pythonPath -c "from app.version import APP_VERSION; print(APP_VERSION)"
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+$version | Set-Content (Join-Path $bundlePath "VERSION.txt") -Encoding UTF8
+
+foreach ($portableFile in @($updateDocsPath, $updatePsPath, $updateCmdPath)) {
+    if (Test-Path $portableFile) {
+        Copy-Item $portableFile (Join-Path $bundlePath (Split-Path $portableFile -Leaf)) -Force
+    }
 }
 
 Write-Host "Portable build created in: $bundlePath"

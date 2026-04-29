@@ -6,18 +6,20 @@ import asyncio
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp import ClientTimeout
 from loguru import logger
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from app.models import XmlRiverResult
+from app.models import XmlRiverDomainTopResult, XmlRiverResult
 
 XMLRIVER_ENDPOINTS = {
     "yandex": "https://xmlriver.com/search_yandex/xml",
     "google": "https://xmlriver.com/search/xml",
 }
+DOMAIN_TOP_NOT_FOUND_POSITION = "Не найдено"
 
 
 class XmlRiverClient:
@@ -55,6 +57,39 @@ class XmlRiverClient:
         ordered_results = [indexed_results[index] for index in sorted(indexed_results)]
         return [item for group in ordered_results for item in group]
 
+    async def fetch_domain_top_queries(
+        self,
+        queries: list[str],
+        target_domain: str,
+        params: dict[str, Any],
+        progress_callback: Callable[[int, int, str], None] | None = None,
+    ) -> list[XmlRiverDomainTopResult]:
+        """Checks whether the target domain appears in Yandex XMLRiver results for each query."""
+        normalized_target_domain = normalize_domain(target_domain)
+        async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            tasks = [
+                asyncio.create_task(
+                    self._fetch_indexed_domain_top_query(
+                        session,
+                        index,
+                        query,
+                        normalized_target_domain,
+                        params,
+                    ),
+                )
+                for index, query in enumerate(queries)
+            ]
+            indexed_results: dict[int, XmlRiverDomainTopResult] = {}
+            total_queries = len(tasks)
+            completed_queries = 0
+            for task in asyncio.as_completed(tasks):
+                index, query_result = await task
+                indexed_results[index] = query_result
+                completed_queries += 1
+                if progress_callback is not None:
+                    progress_callback(completed_queries, total_queries, query_result.query)
+        return [indexed_results[index] for index in sorted(indexed_results)]
+
     async def _fetch_indexed_query(
         self,
         session: aiohttp.ClientSession,
@@ -65,6 +100,72 @@ class XmlRiverClient:
     ) -> tuple[int, list[XmlRiverResult]]:
         """Возвращает индекс исходного запроса вместе с результатами."""
         return index, await self._fetch_single_query(session, query, engine, params)
+
+    async def _fetch_indexed_domain_top_query(
+        self,
+        session: aiohttp.ClientSession,
+        index: int,
+        query: str,
+        normalized_target_domain: str,
+        params: dict[str, Any],
+    ) -> tuple[int, XmlRiverDomainTopResult]:
+        """Returns the original query index and the domain-top check result."""
+        query_results = await self._fetch_single_query(session, query, "yandex", params)
+        return index, self._select_domain_top_result(query, normalized_target_domain, query_results)
+
+    def _select_domain_top_result(
+        self,
+        query: str,
+        normalized_target_domain: str,
+        query_results: list[XmlRiverResult],
+    ) -> XmlRiverDomainTopResult:
+        """Finds the first Yandex result matching the target domain."""
+        if not normalized_target_domain:
+            return XmlRiverDomainTopResult(
+                query=query,
+                position="Ошибка",
+                target_domain=normalized_target_domain,
+                error_code="domain",
+                error_message="Введите домен для проверки",
+            )
+        if not query_results:
+            return XmlRiverDomainTopResult(
+                query=query,
+                position=DOMAIN_TOP_NOT_FOUND_POSITION,
+                target_domain=normalized_target_domain,
+            )
+        first_result = query_results[0]
+        if first_result.error_code == "empty":
+            return XmlRiverDomainTopResult(
+                query=query,
+                position=DOMAIN_TOP_NOT_FOUND_POSITION,
+                target_domain=normalized_target_domain,
+            )
+        if first_result.error_code:
+            return XmlRiverDomainTopResult(
+                query=query,
+                position="Ошибка",
+                url=first_result.url,
+                domain=first_result.domain,
+                target_domain=normalized_target_domain,
+                error_code=first_result.error_code,
+                error_message=first_result.error_message,
+            )
+        for result in query_results:
+            result_domain = result.domain or result.url
+            if domains_match(result_domain, normalized_target_domain):
+                return XmlRiverDomainTopResult(
+                    query=query,
+                    position=result.position,
+                    url=result.url,
+                    domain=normalize_domain(result_domain),
+                    target_domain=normalized_target_domain,
+                )
+        return XmlRiverDomainTopResult(
+            query=query,
+            position=DOMAIN_TOP_NOT_FOUND_POSITION,
+            target_domain=normalized_target_domain,
+        )
 
     @retry(
         stop=stop_after_attempt(3),
@@ -152,3 +253,26 @@ class XmlRiverClient:
         if node is None or node.text is None:
             return ""
         return node.text.strip()
+
+
+def normalize_domain(value: str) -> str:
+    """Normalizes a domain or URL for comparison."""
+    cleaned_value = value.strip().casefold()
+    if not cleaned_value:
+        return ""
+    parse_value = cleaned_value if "://" in cleaned_value else f"//{cleaned_value}"
+    parsed_value = urlsplit(parse_value)
+    host = parsed_value.hostname or cleaned_value.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    host = host.split(":", 1)[0].strip().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def domains_match(candidate_domain: str, target_domain: str) -> bool:
+    """Returns True when candidate equals target or is its subdomain."""
+    normalized_candidate = normalize_domain(candidate_domain)
+    normalized_target = normalize_domain(target_domain)
+    if not normalized_candidate or not normalized_target:
+        return False
+    return normalized_candidate == normalized_target or normalized_candidate.endswith(f".{normalized_target}")

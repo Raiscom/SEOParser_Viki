@@ -18,6 +18,18 @@ class XmlRiverResult(BaseModel):
     error_code: str = ""
 
 
+class XmlRiverDomainTopResult(BaseModel):
+    """Описывает результат проверки домена в топе Yandex XMLRiver."""
+
+    query: str
+    position: str = ""
+    url: str = ""
+    domain: str = ""
+    target_domain: str = ""
+    error_message: str = ""
+    error_code: str = ""
+
+
 class SerpRiverResult(BaseModel):
     """Описывает одну строку результата SERPRiver."""
 
