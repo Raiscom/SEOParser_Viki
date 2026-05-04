@@ -16,7 +16,24 @@ import ttkbootstrap as ttk
 from loguru import logger
 
 from app.config import AppSettings, get_settings, save_settings
-from app.models import SerpRiverResult, WordstatResult, XmlRiverDomainTopResult, XmlRiverResult
+from app.models import (
+    BukvarixDomainResult,
+    BukvarixKeywordResult,
+    DomainKeywordCandidate,
+    DomainKeywordPosition,
+    SerpRiverResult,
+    WordstatResult,
+    XmlRiverDomainTopResult,
+    XmlRiverResult,
+)
+from app.services.domain_keys import (
+    DomainKeywordFilters,
+    DomainKeywordOptions,
+    DomainKeysClient,
+    candidates_to_unchecked_positions,
+    parse_filter_text,
+)
+from app.services.bukvarix import BukvarixClient
 from app.services.serpriver import SerpRiverClient
 from app.services.wordstat import WordstatClient
 from app.services.xmlriver import XmlRiverClient
@@ -41,8 +58,45 @@ WORDSTAT_DEVICE_VALUES = (
 )
 WORDSTAT_PERIOD_VALUES = ("", "month", "week", "day")
 WORDSTAT_PAGETYPE_VALUES = ("words", "history")
+WORDSTAT_PHRASES_LABEL = "Wordstat Сбор фраз"
+WORDSTAT_FREQUENCY_LABEL = "Wordstat Сбор частот"
 TOP_DOMAIN_DEPTH_VALUES = ("10", "20", "30", "40", "50")
+DOMAIN_KEYS_FETCH_MODES = ("SERP title/snippet", "SERP + страницы")
 SERPRIVER_OUTPUT_FORMAT_VALUES = ("json", "xml")
+BUKVARIX_KEYWORD_MODE_VALUES = ("Простой GET", "Расширенный POST")
+BUKVARIX_DOMAIN_MODE_VALUES = ("Один домен GET", "Сравнение двух GET", "Сравнение нескольких POST")
+BUKVARIX_FORMAT_VALUES = ("tsv", "csv", "json", "txt")
+BUKVARIX_BOOL_VALUES = ("", "0", "1")
+BUKVARIX_JSON_TYPE_VALUES = ("object", "array")
+BUKVARIX_REPORT_TYPE_VALUES = ("report", "word_analysis")
+BUKVARIX_REGION_VALUES = (
+    "msk",
+    "gmsk",
+    "spb",
+    "rus",
+    "nsk",
+    "ekb",
+    "kzn",
+    "nnv",
+    "kry",
+    "che",
+    "sam",
+    "ufa",
+    "rnd",
+    "krr",
+    "oms",
+    "vrn",
+    "prm",
+    "vlg",
+    "sar",
+    "tmn",
+    "tom",
+    "gkiev",
+    "minsk",
+    "gminsk",
+    "nursul",
+)
+BUKVARIX_COMPARISON_TYPE_VALUES = ("intersect", "domain1_uniq", "domain2_uniq")
 SORT_DIRECTION_VALUES = ("A -> Я / 1 -> 9", "Я -> A / 9 -> 1")
 COMBOBOX_MAX_VALUES = 200
 FILTER_DEBOUNCE_MS = 300
@@ -109,8 +163,12 @@ class SeoParserApp:
         self.is_google_xml_running = False
         self.is_yandex_xml_running = False
         self.is_wordstat_running = False
+        self.is_wordstat_frequency_running = False
         self.is_top_domain_running = False
+        self.is_domain_keys_running = False
         self.is_serpriver_running = False
+        self.is_bukvarix_keywords_running = False
+        self.is_bukvarix_domains_running = False
 
         self.xmlriver_user_var = tk.StringVar(value=self.settings.xmlriver_user_id)
         self.xmlriver_key_var = tk.StringVar(value=self.settings.xmlriver_api_key)
@@ -151,6 +209,17 @@ class SeoParserApp:
         self.wordstat_required_catalogs = ("yandex_geo",)
         self.is_wordstat_blocked = False
 
+        self.wordstat_frequency_region_var = tk.StringVar(
+            value=self._get_saved_reference_label("yandex_geo", self.settings.wordstat_last_region_label),
+        )
+        self.wordstat_frequency_regions_extra_var = tk.StringVar(value="")
+        self.wordstat_frequency_device_var = tk.StringVar(value="")
+        self.wordstat_frequency_period_var = tk.StringVar(value="month")
+        self.wordstat_frequency_start_var = tk.StringVar(value="")
+        self.wordstat_frequency_end_var = tk.StringVar(value="")
+        self.wordstat_frequency_controls: list[tuple[tk.Widget, str]] = []
+        self.is_wordstat_frequency_blocked = False
+
         self.top_domain_target_var = tk.StringVar(value="")
         self.top_domain_lr_var = tk.StringVar(
             value=self._get_saved_reference_label("yandex_geo", self.settings.yandex_last_region_label),
@@ -163,10 +232,33 @@ class SeoParserApp:
         self.top_domain_required_catalogs = ("yandex_geo",)
         self.is_top_domain_blocked = False
 
+        self.domain_keys_target_var = tk.StringVar(value="")
+        self.domain_keys_lr_var = tk.StringVar(
+            value=self._get_saved_reference_label("yandex_geo", self.settings.yandex_last_region_label),
+        )
+        self.domain_keys_search_domain_var = tk.StringVar(value="ru")
+        self.domain_keys_lang_var = tk.StringVar(value="ru")
+        self.domain_keys_device_var = tk.StringVar(value="desktop")
+        self.domain_keys_depth_var = tk.StringVar(value="10")
+        self.domain_keys_url_limit_var = tk.StringVar(value="50")
+        self.domain_keys_keyword_limit_var = tk.StringVar(value="200")
+        self.domain_keys_pages_per_seed_var = tk.StringVar(value="1")
+        self.domain_keys_include_words_var = tk.StringVar(value="")
+        self.domain_keys_exclude_words_var = tk.StringVar(value="")
+        self.domain_keys_url_include_var = tk.StringVar(value="")
+        self.domain_keys_url_exclude_var = tk.StringVar(value="")
+        self.domain_keys_fetch_mode_var = tk.StringVar(value=DOMAIN_KEYS_FETCH_MODES[1])
+        self.domain_keys_use_tips_var = tk.BooleanVar(value=True)
+        self.domain_keys_controls: list[tuple[tk.Widget, str]] = []
+        self.domain_keys_required_catalogs = ("yandex_geo",)
+        self.is_domain_keys_blocked = False
+
         self.google_results: list[XmlRiverResult] = []
         self.yandex_results: list[XmlRiverResult] = []
         self.wordstat_results: list[WordstatResult] = []
+        self.wordstat_frequency_results: list[WordstatResult] = []
         self.top_domain_results: list[XmlRiverDomainTopResult] = []
+        self.domain_keys_results: list[DomainKeywordPosition] = []
         self.serpriver_results: list[SerpRiverResult] = []
         self.serpriver_raw_response = ""
 
@@ -179,9 +271,15 @@ class SeoParserApp:
         self.wordstat_filter_var = tk.StringVar(value="")
         self.wordstat_sort_var = tk.StringVar(value="query")
         self.wordstat_sort_direction_var = tk.StringVar(value=SORT_DIRECTION_VALUES[0])
+        self.wordstat_frequency_filter_var = tk.StringVar(value="")
+        self.wordstat_frequency_sort_var = tk.StringVar(value="query")
+        self.wordstat_frequency_sort_direction_var = tk.StringVar(value=SORT_DIRECTION_VALUES[0])
         self.top_domain_filter_var = tk.StringVar(value="")
         self.top_domain_sort_var = tk.StringVar(value="query")
         self.top_domain_sort_direction_var = tk.StringVar(value=SORT_DIRECTION_VALUES[0])
+        self.domain_keys_filter_var = tk.StringVar(value="")
+        self.domain_keys_sort_var = tk.StringVar(value="score")
+        self.domain_keys_sort_direction_var = tk.StringVar(value=SORT_DIRECTION_VALUES[1])
         self.serpriver_key_var = tk.StringVar(value=self.settings.serpriver_api_key)
         self.serpriver_engine_var = tk.StringVar(value="yandex")
         self.serpriver_domain_var = tk.StringVar(value="yandex.ru")
@@ -198,17 +296,61 @@ class SeoParserApp:
         self.serpriver_controls: list[tuple[tk.Widget, str]] = []
         self.serpriver_option_entries: dict[str, ttk.Entry] = {}
 
+        self.bukvarix_key_var = tk.StringVar(value=self.settings.bukvarix_api_key or "free")
+        self.is_bukvarix_key_visible = False
+        self.bukvarix_shared_controls: list[tuple[tk.Widget, str]] = []
+        self.bukvarix_keyword_mode_var = tk.StringVar(value=BUKVARIX_KEYWORD_MODE_VALUES[0])
+        self.bukvarix_keyword_num_var = tk.StringVar(value="250")
+        self.bukvarix_keyword_format_var = tk.StringVar(value="tsv")
+        self.bukvarix_keyword_bom_var = tk.StringVar(value="")
+        self.bukvarix_keyword_header_var = tk.StringVar(value="1")
+        self.bukvarix_keyword_json_type_var = tk.StringVar(value="object")
+        self.bukvarix_keyword_report_type_var = tk.StringVar(value="report")
+        self.bukvarix_keyword_result_count_var = tk.StringVar(value="")
+        self.bukvarix_keyword_broad_from_var = tk.StringVar(value="")
+        self.bukvarix_keyword_broad_to_var = tk.StringVar(value="")
+        self.bukvarix_keyword_exact_from_var = tk.StringVar(value="")
+        self.bukvarix_keyword_exact_to_var = tk.StringVar(value="")
+        self.bukvarix_keyword_length_from_var = tk.StringVar(value="")
+        self.bukvarix_keyword_length_to_var = tk.StringVar(value="")
+        self.bukvarix_keyword_words_from_var = tk.StringVar(value="")
+        self.bukvarix_keyword_words_to_var = tk.StringVar(value="")
+        self.bukvarix_keyword_controls: list[tuple[tk.Widget, str]] = []
+        self.bukvarix_keywords_results: list[BukvarixKeywordResult] = []
+        self.bukvarix_keyword_filter_var = tk.StringVar(value="")
+        self.bukvarix_keyword_sort_var = tk.StringVar(value="keyword")
+        self.bukvarix_keyword_sort_direction_var = tk.StringVar(value=SORT_DIRECTION_VALUES[0])
+
+        self.bukvarix_domain_mode_var = tk.StringVar(value=BUKVARIX_DOMAIN_MODE_VALUES[0])
+        self.bukvarix_domain_second_var = tk.StringVar(value="")
+        self.bukvarix_domain_num_var = tk.StringVar(value="250")
+        self.bukvarix_domain_format_var = tk.StringVar(value="tsv")
+        self.bukvarix_domain_bom_var = tk.StringVar(value="")
+        self.bukvarix_domain_header_var = tk.StringVar(value="1")
+        self.bukvarix_domain_json_type_var = tk.StringVar(value="object")
+        self.bukvarix_domain_region_var = tk.StringVar(value="msk")
+        self.bukvarix_domain_comparison_type_var = tk.StringVar(value="intersect")
+        self.bukvarix_domain_result_count_var = tk.StringVar(value="")
+        self.bukvarix_domain_controls: list[tuple[tk.Widget, str]] = []
+        self.bukvarix_domains_results: list[BukvarixDomainResult] = []
+        self.bukvarix_domain_filter_var = tk.StringVar(value="")
+        self.bukvarix_domain_sort_var = tk.StringVar(value="keyword")
+        self.bukvarix_domain_sort_direction_var = tk.StringVar(value=SORT_DIRECTION_VALUES[0])
+
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=12, pady=(12, 0))
 
         self.xmlriver_frame = ttk.Frame(self.notebook)
         self.serpriver_frame = ttk.Frame(self.notebook)
+        self.bukvarix_frame = ttk.Frame(self.notebook)
 
         self.notebook.add(self.xmlriver_frame, text="  XMLRiver  ")
         self.notebook.add(self.serpriver_frame, text="  SERPRiver  ")
+        self.notebook.add(self.bukvarix_frame, text="  Букварикс  ")
 
         self._build_xmlriver_tab()
         self._build_serpriver_tab()
+        self._build_bukvarix_tab()
 
         self.status_var = tk.StringVar(value=f"Готов к работе | v{APP_VERSION}")
         status_bar = ttk.Frame(self.root)
@@ -267,8 +409,22 @@ class SeoParserApp:
             self.root.bind_class(widget_class, "<Button-3>", self._show_edit_menu, add="+")
             self.root.bind_class(widget_class, "<Control-a>", self._select_all_shortcut, add="+")
             self.root.bind_class(widget_class, "<Control-A>", self._select_all_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-Cyrillic_ef>", self._select_all_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-Cyrillic_EF>", self._select_all_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-c>", self._copy_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-C>", self._copy_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-Cyrillic_es>", self._copy_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-Cyrillic_ES>", self._copy_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-x>", self._cut_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-X>", self._cut_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-Cyrillic_che>", self._cut_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-Cyrillic_CHE>", self._cut_shortcut, add="+")
             self.root.bind_class(widget_class, "<Control-v>", self._paste_shortcut, add="+")
             self.root.bind_class(widget_class, "<Control-V>", self._paste_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-Cyrillic_em>", self._paste_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-Cyrillic_EM>", self._paste_shortcut, add="+")
+            self.root.bind_class(widget_class, "<Control-KeyPress>", self._handle_edit_control_shortcut, add="+")
+        self.root.bind_all("<KeyPress>", self._handle_global_edit_shortcut, add="+")
 
     def _select_all_shortcut(self, event: tk.Event) -> str:
         """Обрабатывает Ctrl+A для редактируемых полей."""
@@ -291,6 +447,18 @@ class SeoParserApp:
         widget = getattr(self, "edit_menu_widget", None)
         if widget is not None:
             widget.event_generate(event_name)
+
+    def _copy_shortcut(self, event: tk.Event) -> str:
+        """Handles Ctrl+C for editable widgets."""
+        self.edit_menu_widget = event.widget
+        self._generate_edit_event("<<Copy>>")
+        return "break"
+
+    def _cut_shortcut(self, event: tk.Event) -> str:
+        """Handles Ctrl+X for editable widgets."""
+        self.edit_menu_widget = event.widget
+        self._generate_edit_event("<<Cut>>")
+        return "break"
 
     def _paste_shortcut(self, event: tk.Event) -> str:
         """Обрабатывает Ctrl+V для полей ввода и combobox."""
@@ -353,23 +521,57 @@ class SeoParserApp:
 
     def _bind_query_text_shortcuts(self, text_widget: tk.Text) -> None:
         """Добавляет прямые горячие клавиши для текстовых полей запросов."""
-        text_widget.bind("<Control-a>", self._handle_query_select_all_shortcut, add="+")
-        text_widget.bind("<Control-A>", self._handle_query_select_all_shortcut, add="+")
-        text_widget.bind("<Control-KeyPress>", self._handle_query_select_all_shortcut, add="+")
+        text_widget.bind("<Control-KeyPress>", self._handle_edit_control_shortcut, add="+")
 
-    def _handle_query_select_all_shortcut(self, event: tk.Event) -> str | None:
-        """Обрабатывает Ctrl+A для английской и русской раскладки."""
+    def _handle_edit_control_shortcut(self, event: tk.Event) -> str | None:
+        """Handles common Ctrl shortcuts for editable widgets across EN/RU layouts."""
         keysym = (event.keysym or "").lower()
         char = (event.char or "").lower()
-        if keysym not in {"a", "cyrillic_ef"} and char not in {"a", "ф"}:
-            return None
-        if not isinstance(event.widget, tk.Text):
-            return None
         self.edit_menu_widget = event.widget
-        event.widget.tag_add("sel", "1.0", "end-1c")
-        event.widget.mark_set("insert", "1.0")
-        event.widget.see("insert")
+        if keysym in {"a", "cyrillic_ef"} or char in {"a", "ф"}:
+            self._select_all_in_widget()
+            return "break"
+        if keysym in {"c", "cyrillic_es"} or char in {"c", "с"}:
+            self._generate_edit_event("<<Copy>>")
+            return "break"
+        if keysym in {"v", "cyrillic_em"} or char in {"v", "м"}:
+            self._paste_into_widget()
+            return "break"
+        if keysym in {"x", "cyrillic_che"} or char in {"x", "ч"}:
+            self._generate_edit_event("<<Cut>>")
+            return "break"
+        return None
+
+    def _handle_global_edit_shortcut(self, event: tk.Event) -> str | None:
+        """Handles Ctrl shortcuts by physical keycode for non-Latin Windows layouts."""
+        if not self._is_control_pressed(event):
+            return None
+        widget = event.widget
+        try:
+            widget_class = widget.winfo_class()
+        except tk.TclError:
+            return None
+        if widget_class not in {"Entry", "TEntry", "Text", "TCombobox"}:
+            return None
+        action_by_keycode = {
+            65: self._select_all_in_widget,  # A / Ф
+            67: lambda: self._generate_edit_event("<<Copy>>"),  # C / С
+            86: self._paste_into_widget,  # V / М
+            88: lambda: self._generate_edit_event("<<Cut>>"),  # X / Ч
+        }
+        keysym = (event.keysym or "").lower()
+        if keysym in {"a", "c", "v", "x"}:
+            return None
+        action = action_by_keycode.get(int(getattr(event, "keycode", 0) or 0))
+        if action is None:
+            return None
+        self.edit_menu_widget = widget
+        action()
         return "break"
+
+    def _is_control_pressed(self, event: tk.Event) -> bool:
+        """Returns True when either Ctrl key is pressed in Tk state flags."""
+        return bool(int(getattr(event, "state", 0) or 0) & 0x0004)
 
     def _build_resizable_sections(self, parent: ttk.Frame) -> tuple[ttk.LabelFrame, ttk.LabelFrame]:
         """Создает стабильные секции запросов и результатов без ломающего splitter."""
@@ -507,17 +709,24 @@ class SeoParserApp:
         self.google_frame = ttk.Frame(self.xmlriver_notebook)
         self.yandex_frame = ttk.Frame(self.xmlriver_notebook)
         self.wordstat_frame = ttk.Frame(self.xmlriver_notebook)
+        self.wordstat_frequency_frame = ttk.Frame(self.xmlriver_notebook)
         self.top_domain_frame = ttk.Frame(self.xmlriver_notebook)
+        self.domain_keys_frame = ttk.Frame(self.xmlriver_notebook)
 
         self.xmlriver_notebook.add(self.google_frame, text="  Google  ")
         self.xmlriver_notebook.add(self.yandex_frame, text="  Yandex  ")
-        self.xmlriver_notebook.add(self.wordstat_frame, text="  Wordstat  ")
+        self.xmlriver_notebook.add(self.wordstat_frame, text=f"  {WORDSTAT_PHRASES_LABEL}  ")
+        self.xmlriver_notebook.add(self.wordstat_frequency_frame, text=f"  {WORDSTAT_FREQUENCY_LABEL}  ")
         self.xmlriver_notebook.add(self.top_domain_frame, text="  Трекер позиций домена  ")
+
+        self.xmlriver_notebook.add(self.domain_keys_frame, text="  Сбор/Позиция фраз по домену  ")
 
         self._build_google_tab()
         self._build_yandex_tab()
         self._build_wordstat_tab()
+        self._build_wordstat_frequency_tab()
         self._build_top_domain_tab()
+        self._build_domain_keys_tab()
 
     # ── Подвкладка Google ──
 
@@ -768,6 +977,167 @@ class SeoParserApp:
             self.wordstat_warning_label, self.wordstat_controls, self.wordstat_required_catalogs, "wordstat",
         )
 
+    def _build_wordstat_frequency_tab(self) -> None:
+        """Создает подвкладку сбора частот Wordstat."""
+        self.wordstat_frequency_warning_label = ttk.Label(self.wordstat_frequency_frame, text="", bootstyle="danger")
+        self.wordstat_frequency_warning_label.pack(anchor="w", pady=(0, 6))
+
+        params_frame = ttk.LabelFrame(self.wordstat_frequency_frame, text="Параметры Wordstat частот")
+        params_frame.pack(fill="x")
+        self.wordstat_frequency_region_combo = self._add_reference_combobox(
+            params_frame,
+            "Основной регион",
+            self.wordstat_frequency_region_var,
+            "yandex_geo",
+            0,
+            0,
+            28,
+            self.wordstat_frequency_controls,
+            searchable=True,
+            on_commit=lambda _value: self._save_ui_settings(),
+        )
+        ttk.Label(params_frame, text="Доп. регионы (id)").grid(row=0, column=2, sticky="w")
+        self.wordstat_frequency_regions_extra_entry = ttk.Entry(
+            params_frame,
+            textvariable=self.wordstat_frequency_regions_extra_var,
+            width=24,
+        )
+        self.wordstat_frequency_regions_extra_entry.grid(row=0, column=3, padx=(8, 14), sticky="we")
+        self._register_control(self.wordstat_frequency_controls, self.wordstat_frequency_regions_extra_entry)
+        self.wordstat_frequency_device_combo = self._add_static_combobox(
+            params_frame,
+            "Устройство",
+            self.wordstat_frequency_device_var,
+            WORDSTAT_DEVICE_VALUES,
+            1,
+            0,
+            24,
+            self.wordstat_frequency_controls,
+            searchable=True,
+        )
+        self.wordstat_frequency_period_combo = self._add_static_combobox(
+            params_frame,
+            "Группировка",
+            self.wordstat_frequency_period_var,
+            WORDSTAT_PERIOD_VALUES,
+            1,
+            2,
+            18,
+            self.wordstat_frequency_controls,
+            searchable=True,
+        )
+        ttk.Label(params_frame, text="Дата начала").grid(row=2, column=0, sticky="w")
+        self.wordstat_frequency_start_entry = ttk.Entry(
+            params_frame,
+            textvariable=self.wordstat_frequency_start_var,
+            width=18,
+        )
+        self.wordstat_frequency_start_entry.grid(row=2, column=1, padx=(8, 14), sticky="we")
+        self._register_control(self.wordstat_frequency_controls, self.wordstat_frequency_start_entry)
+        ttk.Label(params_frame, text="Дата окончания").grid(row=2, column=2, sticky="w")
+        self.wordstat_frequency_end_entry = ttk.Entry(
+            params_frame,
+            textvariable=self.wordstat_frequency_end_var,
+            width=18,
+        )
+        self.wordstat_frequency_end_entry.grid(row=2, column=3, padx=(8, 14), sticky="we")
+        self._register_control(self.wordstat_frequency_controls, self.wordstat_frequency_end_entry)
+
+        input_frame, results_frame = self._build_resizable_sections(self.wordstat_frequency_frame)
+        self.wordstat_frequency_queries_text = tk.Text(
+            input_frame,
+            height=6,
+            wrap="word",
+            bg="#2b3e50",
+            fg="white",
+            insertbackground="white",
+            selectbackground=ACCENT_COLOR,
+            font=APP_FONT,
+        )
+        self.wordstat_frequency_queries_text.pack(fill="both", expand=True)
+        self._bind_query_text_shortcuts(self.wordstat_frequency_queries_text)
+
+        actions_frame = ttk.Frame(input_frame)
+        actions_frame.pack(fill="x", pady=(8, 0))
+        self.wordstat_frequency_import_csv_button = ttk.Button(
+            actions_frame,
+            text="Импорт CSV",
+            command=self._import_wordstat_frequency_csv,
+            bootstyle="secondary-outline",
+        )
+        self.wordstat_frequency_import_csv_button.pack(side="left")
+        self.wordstat_frequency_import_xlsx_button = ttk.Button(
+            actions_frame,
+            text="Импорт XLSX",
+            command=self._import_wordstat_frequency_xlsx,
+            bootstyle="secondary-outline",
+        )
+        self.wordstat_frequency_import_xlsx_button.pack(side="left", padx=(8, 0))
+        self.wordstat_frequency_start_button = ttk.Button(
+            actions_frame,
+            text="▶  Запустить",
+            command=self._start_wordstat_frequency,
+            bootstyle="warning",
+        )
+        self.wordstat_frequency_start_button.pack(side="left", padx=(16, 0))
+        self.wordstat_frequency_export_csv_button = ttk.Button(
+            actions_frame,
+            text="Экспорт CSV",
+            command=self._export_wordstat_frequency_csv,
+            bootstyle="info-outline",
+        )
+        self.wordstat_frequency_export_csv_button.pack(side="right")
+        self.wordstat_frequency_export_xlsx_button = ttk.Button(
+            actions_frame,
+            text="Экспорт XLSX",
+            command=self._export_wordstat_frequency_xlsx,
+            bootstyle="info-outline",
+        )
+        self.wordstat_frequency_export_xlsx_button.pack(side="right", padx=(0, 8))
+
+        progress_frame = ttk.Frame(self.wordstat_frequency_frame)
+        progress_frame.pack(fill="x", pady=(10, 0))
+        ttk.Label(progress_frame, text="Прогресс обработки").pack(anchor="w")
+        self.wordstat_frequency_progress = ttk.Progressbar(
+            progress_frame,
+            mode="determinate",
+            maximum=1,
+            value=0,
+            bootstyle="warning-striped",
+        )
+        self.wordstat_frequency_progress.pack(fill="x", pady=(4, 0))
+
+        self._build_result_tools(
+            results_frame,
+            self.wordstat_frequency_filter_var,
+            self.wordstat_frequency_sort_var,
+            self.wordstat_frequency_sort_direction_var,
+            ("query", "result_type", "phrase", "value"),
+            self._apply_wordstat_frequency_view,
+            "wordstat_frequency",
+        )
+        self.wordstat_frequency_tree = self._build_scrolled_tree(
+            results_frame,
+            ("query", "result_type", "phrase", "value"),
+            (("query", "Запрос"), ("result_type", "Тип"), ("phrase", "Фраза"), ("value", "Значение")),
+        )
+
+        self._register_control(self.wordstat_frequency_controls, self.wordstat_frequency_queries_text, "normal")
+        for widget in (
+            self.wordstat_frequency_import_csv_button,
+            self.wordstat_frequency_import_xlsx_button,
+            self.wordstat_frequency_start_button,
+            self.wordstat_frequency_export_csv_button,
+            self.wordstat_frequency_export_xlsx_button,
+        ):
+            self._register_control(self.wordstat_frequency_controls, widget)
+        self._apply_catalog_requirements(
+            self.wordstat_frequency_warning_label,
+            self.wordstat_frequency_controls,
+            self.wordstat_required_catalogs,
+            "wordstat_frequency",
+        )
+
     # ── Подвкладка Трекер позиций домена ──
 
     def _build_top_domain_tab(self) -> None:
@@ -886,6 +1256,241 @@ class SeoParserApp:
         )
 
     # ── Вкладка SERPRiver ──
+
+    def _build_domain_keys_tab(self) -> None:
+        """Creates XMLRiver domain keyword discovery tab."""
+        self.domain_keys_warning_label = ttk.Label(self.domain_keys_frame, text="", bootstyle="danger")
+        self.domain_keys_warning_label.pack(anchor="w", pady=(0, 6))
+
+        params_frame = ttk.LabelFrame(self.domain_keys_frame, text="Параметры SEO-сбора")
+        params_frame.pack(fill="x")
+        ttk.Label(params_frame, text="Домен").grid(row=0, column=0, sticky="w")
+        self.domain_keys_target_entry = ttk.Entry(params_frame, textvariable=self.domain_keys_target_var, width=28)
+        self.domain_keys_target_entry.grid(row=0, column=1, padx=(8, 14), sticky="we")
+        self._register_control(self.domain_keys_controls, self.domain_keys_target_entry)
+        self.domain_keys_lr_combo = self._add_reference_combobox(
+            params_frame,
+            "Регион",
+            self.domain_keys_lr_var,
+            "yandex_geo",
+            0,
+            2,
+            28,
+            self.domain_keys_controls,
+            searchable=True,
+        )
+        self.domain_keys_search_domain_combo = self._add_static_combobox(
+            params_frame,
+            "Домен Яндекса",
+            self.domain_keys_search_domain_var,
+            YANDEX_DOMAIN_VALUES,
+            1,
+            0,
+            16,
+            self.domain_keys_controls,
+            searchable=True,
+        )
+        ttk.Label(params_frame, text="Язык").grid(row=1, column=2, sticky="w")
+        self.domain_keys_lang_entry = ttk.Entry(params_frame, textvariable=self.domain_keys_lang_var, width=16)
+        self.domain_keys_lang_entry.grid(row=1, column=3, padx=(8, 14), sticky="we")
+        self._register_control(self.domain_keys_controls, self.domain_keys_lang_entry)
+        self.domain_keys_device_combo = self._add_static_combobox(
+            params_frame,
+            "Устройство",
+            self.domain_keys_device_var,
+            DEVICE_VALUES,
+            2,
+            0,
+            16,
+            self.domain_keys_controls,
+            searchable=True,
+        )
+        self.domain_keys_depth_combo = self._add_static_combobox(
+            params_frame,
+            "Глубина",
+            self.domain_keys_depth_var,
+            TOP_DOMAIN_DEPTH_VALUES,
+            2,
+            2,
+            16,
+            self.domain_keys_controls,
+            searchable=False,
+        )
+        ttk.Label(params_frame, text="Лимит URL").grid(row=3, column=0, sticky="w")
+        self.domain_keys_url_limit_entry = ttk.Entry(params_frame, textvariable=self.domain_keys_url_limit_var, width=16)
+        self.domain_keys_url_limit_entry.grid(row=3, column=1, padx=(8, 14), sticky="we")
+        self._register_control(self.domain_keys_controls, self.domain_keys_url_limit_entry)
+        ttk.Label(params_frame, text="Лимит ключей").grid(row=3, column=2, sticky="w")
+        self.domain_keys_keyword_limit_entry = ttk.Entry(params_frame, textvariable=self.domain_keys_keyword_limit_var, width=16)
+        self.domain_keys_keyword_limit_entry.grid(row=3, column=3, padx=(8, 14), sticky="we")
+        self._register_control(self.domain_keys_controls, self.domain_keys_keyword_limit_entry)
+        ttk.Label(params_frame, text="Страниц на seed").grid(row=4, column=0, sticky="w")
+        self.domain_keys_pages_per_seed_entry = ttk.Entry(params_frame, textvariable=self.domain_keys_pages_per_seed_var, width=16)
+        self.domain_keys_pages_per_seed_entry.grid(row=4, column=1, padx=(8, 14), sticky="we")
+        self._register_control(self.domain_keys_controls, self.domain_keys_pages_per_seed_entry)
+        self.domain_keys_fetch_mode_combo = self._add_static_combobox(
+            params_frame,
+            "Режим",
+            self.domain_keys_fetch_mode_var,
+            DOMAIN_KEYS_FETCH_MODES,
+            4,
+            2,
+            20,
+            self.domain_keys_controls,
+            searchable=False,
+        )
+        self.domain_keys_tips_check = ttk.Checkbutton(
+            params_frame,
+            text="Подсказки XMLRiver",
+            variable=self.domain_keys_use_tips_var,
+            bootstyle="warning-round-toggle",
+        )
+        self.domain_keys_tips_check.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self._register_control(self.domain_keys_controls, self.domain_keys_tips_check)
+
+        input_frame = ttk.LabelFrame(self.domain_keys_frame, text="SEO-фильтры и seed-фразы")
+        input_frame.pack(fill="x", pady=(10, 0))
+        filter_grid = ttk.Frame(input_frame)
+        filter_grid.pack(fill="x")
+        filter_grid.columnconfigure(0, weight=1)
+        filter_grid.columnconfigure(1, weight=1)
+
+        ttk.Label(filter_grid, text="Плюс-фразы / seed").grid(row=0, column=0, sticky="w")
+        ttk.Label(filter_grid, text="Минус-слова").grid(row=0, column=1, sticky="w", padx=(10, 0))
+        self.domain_keys_include_text = tk.Text(
+            filter_grid,
+            height=5,
+            wrap="word",
+            bg="#2b3e50",
+            fg="white",
+            insertbackground="white",
+            selectbackground=ACCENT_COLOR,
+            font=APP_FONT,
+        )
+        self.domain_keys_include_text.grid(row=1, column=0, sticky="nsew", pady=(4, 8))
+        self.domain_keys_exclude_text = tk.Text(
+            filter_grid,
+            height=5,
+            wrap="word",
+            bg="#2b3e50",
+            fg="white",
+            insertbackground="white",
+            selectbackground=ACCENT_COLOR,
+            font=APP_FONT,
+        )
+        self.domain_keys_exclude_text.grid(row=1, column=1, sticky="nsew", padx=(10, 0), pady=(4, 8))
+        ttk.Label(filter_grid, text="URL содержит").grid(row=2, column=0, sticky="w")
+        ttk.Label(filter_grid, text="URL не содержит").grid(row=2, column=1, sticky="w", padx=(10, 0))
+        self.domain_keys_url_include_text = tk.Text(
+            filter_grid,
+            height=3,
+            wrap="word",
+            bg="#2b3e50",
+            fg="white",
+            insertbackground="white",
+            selectbackground=ACCENT_COLOR,
+            font=APP_FONT,
+        )
+        self.domain_keys_url_include_text.grid(row=3, column=0, sticky="nsew", pady=(4, 0))
+        self.domain_keys_url_exclude_text = tk.Text(
+            filter_grid,
+            height=3,
+            wrap="word",
+            bg="#2b3e50",
+            fg="white",
+            insertbackground="white",
+            selectbackground=ACCENT_COLOR,
+            font=APP_FONT,
+        )
+        self.domain_keys_url_exclude_text.grid(row=3, column=1, sticky="nsew", padx=(10, 0), pady=(4, 0))
+        for widget in (
+            self.domain_keys_include_text,
+            self.domain_keys_exclude_text,
+            self.domain_keys_url_include_text,
+            self.domain_keys_url_exclude_text,
+        ):
+            self._bind_query_text_shortcuts(widget)
+            self._register_control(self.domain_keys_controls, widget, "normal")
+
+        results_frame = ttk.LabelFrame(self.domain_keys_frame, text="Результаты")
+        results_frame.pack(fill="both", expand=True, pady=(10, 0))
+
+        actions_frame = ttk.Frame(input_frame)
+        actions_frame.pack(fill="x", pady=(8, 0))
+        self.domain_keys_import_csv_button = ttk.Button(
+            actions_frame, text="Импорт CSV", command=self._import_domain_keys_csv, bootstyle="secondary-outline",
+        )
+        self.domain_keys_import_csv_button.pack(side="left")
+        self.domain_keys_import_xlsx_button = ttk.Button(
+            actions_frame, text="Импорт XLSX", command=self._import_domain_keys_xlsx, bootstyle="secondary-outline",
+        )
+        self.domain_keys_import_xlsx_button.pack(side="left", padx=(8, 0))
+        self.domain_keys_collect_button = ttk.Button(
+            actions_frame, text="Собрать ключи", command=self._start_domain_keys_collect, bootstyle="warning",
+        )
+        self.domain_keys_collect_button.pack(side="left", padx=(16, 0))
+        self.domain_keys_check_button = ttk.Button(
+            actions_frame, text="Проверить позиции", command=self._start_domain_keys_check, bootstyle="warning-outline",
+        )
+        self.domain_keys_check_button.pack(side="left", padx=(8, 0))
+        self.domain_keys_run_button = ttk.Button(
+            actions_frame, text="Собрать + проверить", command=self._start_domain_keys_collect_and_check, bootstyle="warning",
+        )
+        self.domain_keys_run_button.pack(side="left", padx=(8, 0))
+        self.domain_keys_export_csv_button = ttk.Button(
+            actions_frame, text="Экспорт CSV", command=self._export_domain_keys_csv, bootstyle="info-outline",
+        )
+        self.domain_keys_export_csv_button.pack(side="right")
+        self.domain_keys_export_xlsx_button = ttk.Button(
+            actions_frame, text="Экспорт XLSX", command=self._export_domain_keys_xlsx, bootstyle="info-outline",
+        )
+        self.domain_keys_export_xlsx_button.pack(side="right", padx=(0, 8))
+
+        progress_frame = ttk.Frame(self.domain_keys_frame)
+        progress_frame.pack(fill="x", pady=(10, 0))
+        ttk.Label(progress_frame, text="Прогресс обработки").pack(anchor="w")
+        self.domain_keys_progress = ttk.Progressbar(progress_frame, mode="determinate", maximum=1, value=0, bootstyle="warning-striped")
+        self.domain_keys_progress.pack(fill="x", pady=(4, 0))
+
+        columns = ("phrase", "position", "url", "domain", "source", "score", "source_url")
+        self._build_result_tools(
+            results_frame,
+            self.domain_keys_filter_var,
+            self.domain_keys_sort_var,
+            self.domain_keys_sort_direction_var,
+            columns,
+            self._apply_domain_keys_view,
+            "domain_keys",
+        )
+        self.domain_keys_tree = self._build_scrolled_tree(
+            results_frame,
+            columns,
+            (
+                ("phrase", "Ключ"),
+                ("position", "Позиция"),
+                ("url", "URL"),
+                ("domain", "Домен"),
+                ("source", "Источник"),
+                ("score", "Score"),
+                ("source_url", "URL-источник"),
+            ),
+        )
+        for widget in (
+            self.domain_keys_import_csv_button,
+            self.domain_keys_import_xlsx_button,
+            self.domain_keys_collect_button,
+            self.domain_keys_check_button,
+            self.domain_keys_run_button,
+            self.domain_keys_export_csv_button,
+            self.domain_keys_export_xlsx_button,
+        ):
+            self._register_control(self.domain_keys_controls, widget)
+        self._apply_catalog_requirements(
+            self.domain_keys_warning_label,
+            self.domain_keys_controls,
+            self.domain_keys_required_catalogs,
+            "domain_keys",
+        )
 
     def _build_serpriver_tab(self) -> None:
         """Создает вкладку SERPRiver."""
@@ -1019,6 +1624,432 @@ class SeoParserApp:
             (self.serpriver_export_button, "normal"),
         ] + [(entry, "normal") for entry in self.serpriver_option_entries.values()]
         self._update_serpriver_engine_fields()
+
+    def _build_bukvarix_tab(self) -> None:
+        """Создает вкладку Букварикса с внутренними подразделами."""
+        access_frame = ttk.LabelFrame(self.bukvarix_frame, text="Доступ Букварикс")
+        access_frame.pack(fill="x")
+        ttk.Label(access_frame, text="API Key").grid(row=0, column=0, sticky="w")
+        self.bukvarix_key_entry = ttk.Entry(access_frame, textvariable=self.bukvarix_key_var, width=32, show="*")
+        self.bukvarix_key_entry.grid(row=0, column=1, padx=(8, 12), sticky="we")
+        bukvarix_toggle_button = ttk.Button(
+            access_frame,
+            text="👁",
+            width=3,
+            command=self._toggle_bukvarix_key,
+            bootstyle="dark",
+        )
+        bukvarix_toggle_button.grid(row=0, column=2, sticky="w")
+        bukvarix_save_button = ttk.Button(
+            access_frame,
+            text="Сохранить",
+            command=self._save_bukvarix_credentials,
+            bootstyle="warning-outline",
+        )
+        bukvarix_save_button.grid(row=0, column=3, sticky="e", padx=(12, 0))
+        self.bukvarix_shared_controls = [
+            (self.bukvarix_key_entry, "normal"),
+            (bukvarix_toggle_button, "normal"),
+            (bukvarix_save_button, "normal"),
+        ]
+
+        tk.Frame(self.bukvarix_frame, height=2, bg=ACCENT_COLOR).pack(fill="x", pady=(10, 0))
+
+        self.bukvarix_notebook = ttk.Notebook(self.bukvarix_frame)
+        self.bukvarix_notebook.pack(fill="both", expand=True, pady=(10, 0))
+        self.bukvarix_keywords_frame = ttk.Frame(self.bukvarix_notebook)
+        self.bukvarix_domains_frame = ttk.Frame(self.bukvarix_notebook)
+        self.bukvarix_notebook.add(self.bukvarix_keywords_frame, text="  Поиск по словам  ")
+        self.bukvarix_notebook.add(self.bukvarix_domains_frame, text="  Поиск по доменам  ")
+
+        self._build_bukvarix_keywords_tab()
+        self._build_bukvarix_domains_tab()
+
+    def _build_bukvarix_keywords_tab(self) -> None:
+        """Создает подраздел поиска Букварикса по словам."""
+        params_frame = ttk.LabelFrame(self.bukvarix_keywords_frame, text="Параметры поиска по словам")
+        params_frame.pack(fill="x")
+        self.bukvarix_keyword_mode_combo = self._add_static_combobox(
+            params_frame,
+            "Режим",
+            self.bukvarix_keyword_mode_var,
+            BUKVARIX_KEYWORD_MODE_VALUES,
+            0,
+            0,
+            22,
+            self.bukvarix_keyword_controls,
+        )
+        self._add_bukvarix_entry(params_frame, "num", self.bukvarix_keyword_num_var, 0, 2, 10, self.bukvarix_keyword_controls)
+        self.bukvarix_keyword_format_combo = self._add_static_combobox(
+            params_frame,
+            "format",
+            self.bukvarix_keyword_format_var,
+            BUKVARIX_FORMAT_VALUES,
+            0,
+            4,
+            10,
+            self.bukvarix_keyword_controls,
+        )
+        self.bukvarix_keyword_bom_combo = self._add_static_combobox(
+            params_frame,
+            "bom",
+            self.bukvarix_keyword_bom_var,
+            BUKVARIX_BOOL_VALUES,
+            1,
+            0,
+            8,
+            self.bukvarix_keyword_controls,
+        )
+        self.bukvarix_keyword_header_combo = self._add_static_combobox(
+            params_frame,
+            "header",
+            self.bukvarix_keyword_header_var,
+            BUKVARIX_BOOL_VALUES,
+            1,
+            2,
+            8,
+            self.bukvarix_keyword_controls,
+        )
+        self.bukvarix_keyword_json_type_combo = self._add_static_combobox(
+            params_frame,
+            "json_type",
+            self.bukvarix_keyword_json_type_var,
+            BUKVARIX_JSON_TYPE_VALUES,
+            1,
+            4,
+            12,
+            self.bukvarix_keyword_controls,
+        )
+        self.bukvarix_keyword_report_type_combo = self._add_static_combobox(
+            params_frame,
+            "report_type",
+            self.bukvarix_keyword_report_type_var,
+            BUKVARIX_REPORT_TYPE_VALUES,
+            2,
+            0,
+            16,
+            self.bukvarix_keyword_controls,
+        )
+        self.bukvarix_keyword_result_count_combo = self._add_static_combobox(
+            params_frame,
+            "result_count",
+            self.bukvarix_keyword_result_count_var,
+            BUKVARIX_BOOL_VALUES,
+            2,
+            2,
+            8,
+            self.bukvarix_keyword_controls,
+        )
+
+        filters_frame = ttk.LabelFrame(self.bukvarix_keywords_frame, text="Фильтры платной версии")
+        filters_frame.pack(fill="x", pady=(10, 0))
+        self._add_bukvarix_entry(filters_frame, "broad_from", self.bukvarix_keyword_broad_from_var, 0, 0, 10, self.bukvarix_keyword_controls)
+        self._add_bukvarix_entry(filters_frame, "broad_to", self.bukvarix_keyword_broad_to_var, 0, 2, 10, self.bukvarix_keyword_controls)
+        self._add_bukvarix_entry(filters_frame, "exact_from", self.bukvarix_keyword_exact_from_var, 0, 4, 10, self.bukvarix_keyword_controls)
+        self._add_bukvarix_entry(filters_frame, "exact_to", self.bukvarix_keyword_exact_to_var, 1, 0, 10, self.bukvarix_keyword_controls)
+        self._add_bukvarix_entry(filters_frame, "length_from", self.bukvarix_keyword_length_from_var, 1, 2, 10, self.bukvarix_keyword_controls)
+        self._add_bukvarix_entry(filters_frame, "length_to", self.bukvarix_keyword_length_to_var, 1, 4, 10, self.bukvarix_keyword_controls)
+        self._add_bukvarix_entry(filters_frame, "words_from", self.bukvarix_keyword_words_from_var, 2, 0, 10, self.bukvarix_keyword_controls)
+        self._add_bukvarix_entry(filters_frame, "words_to", self.bukvarix_keyword_words_to_var, 2, 2, 10, self.bukvarix_keyword_controls)
+
+        input_frame, results_frame = self._build_resizable_sections(self.bukvarix_keywords_frame)
+        self.bukvarix_keyword_queries_text = tk.Text(
+            input_frame,
+            height=6,
+            wrap="word",
+            bg="#2b3e50",
+            fg="white",
+            insertbackground="white",
+            selectbackground=ACCENT_COLOR,
+            font=APP_FONT,
+        )
+        self.bukvarix_keyword_queries_text.pack(fill="both", expand=True)
+        self._bind_query_text_shortcuts(self.bukvarix_keyword_queries_text)
+
+        ttk.Label(input_frame, text="q2: слова-исключения").pack(anchor="w", pady=(8, 0))
+        self.bukvarix_keyword_q2_text = tk.Text(
+            input_frame,
+            height=3,
+            wrap="word",
+            bg="#2b3e50",
+            fg="white",
+            insertbackground="white",
+            selectbackground=ACCENT_COLOR,
+            font=APP_FONT,
+        )
+        self.bukvarix_keyword_q2_text.pack(fill="x", expand=False, pady=(4, 0))
+        self._bind_query_text_shortcuts(self.bukvarix_keyword_q2_text)
+
+        actions_frame = ttk.Frame(input_frame)
+        actions_frame.pack(fill="x", pady=(8, 0))
+        self.bukvarix_keyword_import_csv_button = ttk.Button(
+            actions_frame,
+            text="Импорт CSV",
+            command=self._import_bukvarix_keywords_csv,
+            bootstyle="secondary-outline",
+        )
+        self.bukvarix_keyword_import_csv_button.pack(side="left")
+        self.bukvarix_keyword_import_xlsx_button = ttk.Button(
+            actions_frame,
+            text="Импорт XLSX",
+            command=self._import_bukvarix_keywords_xlsx,
+            bootstyle="secondary-outline",
+        )
+        self.bukvarix_keyword_import_xlsx_button.pack(side="left", padx=(8, 0))
+        self.bukvarix_keyword_start_button = ttk.Button(
+            actions_frame,
+            text="▶  Запустить",
+            command=self._start_bukvarix_keywords,
+            bootstyle="warning",
+        )
+        self.bukvarix_keyword_start_button.pack(side="left", padx=(16, 0))
+        self.bukvarix_keyword_export_csv_button = ttk.Button(
+            actions_frame,
+            text="Экспорт CSV",
+            command=self._export_bukvarix_keywords_csv,
+            bootstyle="info-outline",
+        )
+        self.bukvarix_keyword_export_csv_button.pack(side="right")
+        self.bukvarix_keyword_export_xlsx_button = ttk.Button(
+            actions_frame,
+            text="Экспорт XLSX",
+            command=self._export_bukvarix_keywords_xlsx,
+            bootstyle="info-outline",
+        )
+        self.bukvarix_keyword_export_xlsx_button.pack(side="right", padx=(0, 8))
+
+        progress_frame = ttk.Frame(self.bukvarix_keywords_frame)
+        progress_frame.pack(fill="x", pady=(10, 0))
+        ttk.Label(progress_frame, text="Прогресс обработки").pack(anchor="w")
+        self.bukvarix_keyword_progress = ttk.Progressbar(progress_frame, mode="determinate", maximum=1, value=0, bootstyle="warning-striped")
+        self.bukvarix_keyword_progress.pack(fill="x", pady=(4, 0))
+
+        columns = ("source_query", "keyword", "words_count", "chars_count", "broad_frequency", "exact_frequency", "raw")
+        self._build_result_tools(
+            results_frame,
+            self.bukvarix_keyword_filter_var,
+            self.bukvarix_keyword_sort_var,
+            self.bukvarix_keyword_sort_direction_var,
+            columns,
+            self._apply_bukvarix_keywords_view,
+            "bukvarix_keywords",
+        )
+        self.bukvarix_keyword_tree = self._build_scrolled_tree(
+            results_frame,
+            columns,
+            (
+                ("source_query", "Исходный запрос"),
+                ("keyword", "Ключевая фраза"),
+                ("words_count", "Слов"),
+                ("chars_count", "Символов"),
+                ("broad_frequency", "Широкая частота"),
+                ("exact_frequency", "Точная частота"),
+                ("raw", "Raw"),
+            ),
+        )
+
+        self._register_control(self.bukvarix_keyword_controls, self.bukvarix_keyword_queries_text, "normal")
+        self._register_control(self.bukvarix_keyword_controls, self.bukvarix_keyword_q2_text, "normal")
+        for widget in (
+            self.bukvarix_keyword_import_csv_button,
+            self.bukvarix_keyword_import_xlsx_button,
+            self.bukvarix_keyword_start_button,
+            self.bukvarix_keyword_export_csv_button,
+            self.bukvarix_keyword_export_xlsx_button,
+        ):
+            self._register_control(self.bukvarix_keyword_controls, widget)
+
+    def _build_bukvarix_domains_tab(self) -> None:
+        """Создает подраздел поиска Букварикса по доменам."""
+        params_frame = ttk.LabelFrame(self.bukvarix_domains_frame, text="Параметры поиска по доменам")
+        params_frame.pack(fill="x")
+        self.bukvarix_domain_mode_combo = self._add_static_combobox(
+            params_frame,
+            "Режим",
+            self.bukvarix_domain_mode_var,
+            BUKVARIX_DOMAIN_MODE_VALUES,
+            0,
+            0,
+            24,
+            self.bukvarix_domain_controls,
+        )
+        self._add_bukvarix_entry(params_frame, "q2", self.bukvarix_domain_second_var, 0, 2, 24, self.bukvarix_domain_controls)
+        self._add_bukvarix_entry(params_frame, "num", self.bukvarix_domain_num_var, 0, 4, 10, self.bukvarix_domain_controls)
+        self.bukvarix_domain_format_combo = self._add_static_combobox(
+            params_frame,
+            "format",
+            self.bukvarix_domain_format_var,
+            BUKVARIX_FORMAT_VALUES,
+            1,
+            0,
+            10,
+            self.bukvarix_domain_controls,
+        )
+        self.bukvarix_domain_bom_combo = self._add_static_combobox(
+            params_frame,
+            "bom",
+            self.bukvarix_domain_bom_var,
+            BUKVARIX_BOOL_VALUES,
+            1,
+            2,
+            8,
+            self.bukvarix_domain_controls,
+        )
+        self.bukvarix_domain_header_combo = self._add_static_combobox(
+            params_frame,
+            "header",
+            self.bukvarix_domain_header_var,
+            BUKVARIX_BOOL_VALUES,
+            1,
+            4,
+            8,
+            self.bukvarix_domain_controls,
+        )
+        self.bukvarix_domain_json_type_combo = self._add_static_combobox(
+            params_frame,
+            "json_type",
+            self.bukvarix_domain_json_type_var,
+            BUKVARIX_JSON_TYPE_VALUES,
+            2,
+            0,
+            12,
+            self.bukvarix_domain_controls,
+        )
+        self.bukvarix_domain_region_combo = self._add_static_combobox(
+            params_frame,
+            "region",
+            self.bukvarix_domain_region_var,
+            BUKVARIX_REGION_VALUES,
+            2,
+            2,
+            12,
+            self.bukvarix_domain_controls,
+            searchable=True,
+        )
+        self.bukvarix_domain_comparison_combo = self._add_static_combobox(
+            params_frame,
+            "comparison_type",
+            self.bukvarix_domain_comparison_type_var,
+            BUKVARIX_COMPARISON_TYPE_VALUES,
+            2,
+            4,
+            18,
+            self.bukvarix_domain_controls,
+        )
+        self.bukvarix_domain_result_count_combo = self._add_static_combobox(
+            params_frame,
+            "result_count",
+            self.bukvarix_domain_result_count_var,
+            BUKVARIX_BOOL_VALUES,
+            3,
+            0,
+            8,
+            self.bukvarix_domain_controls,
+        )
+
+        input_frame, results_frame = self._build_resizable_sections(self.bukvarix_domains_frame)
+        self.bukvarix_domain_queries_text = tk.Text(
+            input_frame,
+            height=6,
+            wrap="word",
+            bg="#2b3e50",
+            fg="white",
+            insertbackground="white",
+            selectbackground=ACCENT_COLOR,
+            font=APP_FONT,
+        )
+        self.bukvarix_domain_queries_text.pack(fill="both", expand=True)
+        self._bind_query_text_shortcuts(self.bukvarix_domain_queries_text)
+
+        actions_frame = ttk.Frame(input_frame)
+        actions_frame.pack(fill="x", pady=(8, 0))
+        self.bukvarix_domain_import_csv_button = ttk.Button(
+            actions_frame,
+            text="Импорт CSV",
+            command=self._import_bukvarix_domains_csv,
+            bootstyle="secondary-outline",
+        )
+        self.bukvarix_domain_import_csv_button.pack(side="left")
+        self.bukvarix_domain_import_xlsx_button = ttk.Button(
+            actions_frame,
+            text="Импорт XLSX",
+            command=self._import_bukvarix_domains_xlsx,
+            bootstyle="secondary-outline",
+        )
+        self.bukvarix_domain_import_xlsx_button.pack(side="left", padx=(8, 0))
+        self.bukvarix_domain_start_button = ttk.Button(
+            actions_frame,
+            text="▶  Запустить",
+            command=self._start_bukvarix_domains,
+            bootstyle="warning",
+        )
+        self.bukvarix_domain_start_button.pack(side="left", padx=(16, 0))
+        self.bukvarix_domain_export_csv_button = ttk.Button(
+            actions_frame,
+            text="Экспорт CSV",
+            command=self._export_bukvarix_domains_csv,
+            bootstyle="info-outline",
+        )
+        self.bukvarix_domain_export_csv_button.pack(side="right")
+        self.bukvarix_domain_export_xlsx_button = ttk.Button(
+            actions_frame,
+            text="Экспорт XLSX",
+            command=self._export_bukvarix_domains_xlsx,
+            bootstyle="info-outline",
+        )
+        self.bukvarix_domain_export_xlsx_button.pack(side="right", padx=(0, 8))
+
+        progress_frame = ttk.Frame(self.bukvarix_domains_frame)
+        progress_frame.pack(fill="x", pady=(10, 0))
+        ttk.Label(progress_frame, text="Прогресс обработки").pack(anchor="w")
+        self.bukvarix_domain_progress = ttk.Progressbar(progress_frame, mode="determinate", maximum=1, value=0, bootstyle="warning-striped")
+        self.bukvarix_domain_progress.pack(fill="x", pady=(4, 0))
+
+        columns = (
+            "source_domain",
+            "keyword",
+            "words_count",
+            "chars_count",
+            "serp_results",
+            "broad_frequency",
+            "exact_frequency",
+            "position",
+            "raw",
+        )
+        self._build_result_tools(
+            results_frame,
+            self.bukvarix_domain_filter_var,
+            self.bukvarix_domain_sort_var,
+            self.bukvarix_domain_sort_direction_var,
+            columns,
+            self._apply_bukvarix_domains_view,
+            "bukvarix_domains",
+        )
+        self.bukvarix_domain_tree = self._build_scrolled_tree(
+            results_frame,
+            columns,
+            (
+                ("source_domain", "Исходный домен"),
+                ("keyword", "Ключевая фраза"),
+                ("words_count", "Слов"),
+                ("chars_count", "Символов"),
+                ("serp_results", "Результатов"),
+                ("broad_frequency", "Широкая частота"),
+                ("exact_frequency", "Точная частота"),
+                ("position", "Позиция"),
+                ("raw", "Raw"),
+            ),
+        )
+
+        self._register_control(self.bukvarix_domain_controls, self.bukvarix_domain_queries_text, "normal")
+        for widget in (
+            self.bukvarix_domain_import_csv_button,
+            self.bukvarix_domain_import_xlsx_button,
+            self.bukvarix_domain_start_button,
+            self.bukvarix_domain_export_csv_button,
+            self.bukvarix_domain_export_xlsx_button,
+        ):
+            self._register_control(self.bukvarix_domain_controls, widget)
 
     # ── Построение таблиц ──
 
@@ -1263,6 +2294,23 @@ class SeoParserApp:
         entry.grid(row=row_index, column=column_index + 1, padx=(8, 14), sticky="we")
         self.serpriver_option_entries[option_name] = entry
 
+    def _add_bukvarix_entry(
+        self,
+        parent: ttk.LabelFrame,
+        label_text: str,
+        value_var: tk.StringVar,
+        row_index: int,
+        column_index: int,
+        entry_width: int,
+        controls: list[tuple[tk.Widget, str]],
+    ) -> ttk.Entry:
+        """Добавляет поле параметра Букварикса."""
+        ttk.Label(parent, text=label_text).grid(row=row_index, column=column_index, sticky="w")
+        entry = ttk.Entry(parent, textvariable=value_var, width=entry_width)
+        entry.grid(row=row_index, column=column_index + 1, padx=(8, 14), sticky="we")
+        self._register_control(controls, entry)
+        return entry
+
     def _register_control(self, controls: list[tuple[tk.Widget, str]], widget: tk.Widget, normal_state: str = "normal") -> None:
         """Регистрирует виджет для временной блокировки."""
         controls.append((widget, normal_state))
@@ -1288,6 +2336,10 @@ class SeoParserApp:
             self.is_yandex_blocked = True
         elif tab_name == "top_domain":
             self.is_top_domain_blocked = True
+        elif tab_name == "domain_keys":
+            self.is_domain_keys_blocked = True
+        elif tab_name == "wordstat_frequency":
+            self.is_wordstat_frequency_blocked = True
         else:
             self.is_wordstat_blocked = True
 
@@ -1303,6 +2355,11 @@ class SeoParserApp:
         self.is_serpriver_key_visible = not self.is_serpriver_key_visible
         self.serpriver_key_entry.configure(show="" if self.is_serpriver_key_visible else "*")
 
+    def _toggle_bukvarix_key(self) -> None:
+        """Переключает видимость ключа Букварикса."""
+        self.is_bukvarix_key_visible = not self.is_bukvarix_key_visible
+        self.bukvarix_key_entry.configure(show="" if self.is_bukvarix_key_visible else "*")
+
     # ── Сохранение настроек ──
 
     def _build_app_settings(self) -> AppSettings:
@@ -1311,6 +2368,7 @@ class SeoParserApp:
             XMLRIVER_USER_ID=self.xmlriver_user_var.get().strip(),
             XMLRIVER_API_KEY=self.xmlriver_key_var.get().strip(),
             SERPRIVER_API_KEY=self.serpriver_key_var.get().strip(),
+            BUKVARIX_API_KEY=self.bukvarix_key_var.get().strip(),
             GOOGLE_LAST_LOCATION_LABEL=self.google_loc_var.get().strip(),
             YANDEX_LAST_REGION_LABEL=self.yandex_lr_var.get().strip(),
             WORDSTAT_LAST_REGION_LABEL=self.wordstat_region_var.get().strip(),
@@ -1328,6 +2386,7 @@ class SeoParserApp:
                 self.settings.google_last_location_label != self.google_loc_var.get().strip(),
                 self.settings.yandex_last_region_label != self.yandex_lr_var.get().strip(),
                 self.settings.wordstat_last_region_label != self.wordstat_region_var.get().strip(),
+                self.settings.wordstat_last_region_label != self.wordstat_frequency_region_var.get().strip(),
             ]
         )
         if not has_changes:
@@ -1353,6 +2412,13 @@ class SeoParserApp:
         self.settings = get_settings()
         self._set_status("Данные SERPRiver сохранены")
         messagebox.showinfo("Сохранение", "Данные SERPRiver сохранены в .env")
+
+    def _save_bukvarix_credentials(self) -> None:
+        """Сохраняет ключ Букварикса в .env."""
+        save_settings(self._build_app_settings())
+        self.settings = get_settings()
+        self._set_status("Данные Букварикса сохранены")
+        messagebox.showinfo("Сохранение", "Данные Букварикса сохранены в .env")
 
     def _update_serpriver_engine_fields(self) -> None:
         """Переключает доступность полей SERPRiver по типу поисковика."""
@@ -1385,17 +2451,41 @@ class SeoParserApp:
     def _import_wordstat_xlsx(self) -> None:
         self._load_text_rows(self.wordstat_queries_text, "xlsx")
 
+    def _import_wordstat_frequency_csv(self) -> None:
+        self._load_text_rows(self.wordstat_frequency_queries_text, "csv")
+
+    def _import_wordstat_frequency_xlsx(self) -> None:
+        self._load_text_rows(self.wordstat_frequency_queries_text, "xlsx")
+
     def _import_top_domain_csv(self) -> None:
         self._load_text_rows(self.top_domain_queries_text, "csv")
 
     def _import_top_domain_xlsx(self) -> None:
         self._load_text_rows(self.top_domain_queries_text, "xlsx")
 
+    def _import_domain_keys_csv(self) -> None:
+        self._load_text_rows(self.domain_keys_include_text, "csv")
+
+    def _import_domain_keys_xlsx(self) -> None:
+        self._load_text_rows(self.domain_keys_include_text, "xlsx")
+
     def _import_serpriver_csv(self) -> None:
         self._load_text_rows(self.serpriver_queries_text, "csv")
 
     def _import_serpriver_xlsx(self) -> None:
         self._load_text_rows(self.serpriver_queries_text, "xlsx")
+
+    def _import_bukvarix_keywords_csv(self) -> None:
+        self._load_text_rows(self.bukvarix_keyword_queries_text, "csv")
+
+    def _import_bukvarix_keywords_xlsx(self) -> None:
+        self._load_text_rows(self.bukvarix_keyword_queries_text, "xlsx")
+
+    def _import_bukvarix_domains_csv(self) -> None:
+        self._load_text_rows(self.bukvarix_domain_queries_text, "csv")
+
+    def _import_bukvarix_domains_xlsx(self) -> None:
+        self._load_text_rows(self.bukvarix_domain_queries_text, "xlsx")
 
     def _load_text_rows(self, text_widget: tk.Text, file_type: str) -> None:
         """Загружает строки из файла в текстовое поле."""
@@ -1434,11 +2524,23 @@ class SeoParserApp:
     def _export_wordstat_xlsx(self) -> None:
         self._export_tree_rows(self.wordstat_tree, "export_xmlriver_wordstat", "xlsx")
 
+    def _export_wordstat_frequency_csv(self) -> None:
+        self._export_tree_rows(self.wordstat_frequency_tree, "export_xmlriver_wordstat_frequency", "csv")
+
+    def _export_wordstat_frequency_xlsx(self) -> None:
+        self._export_tree_rows(self.wordstat_frequency_tree, "export_xmlriver_wordstat_frequency", "xlsx")
+
     def _export_top_domain_csv(self) -> None:
         self._export_tree_rows(self.top_domain_tree, "export_xmlriver_domain_top", "csv")
 
     def _export_top_domain_xlsx(self) -> None:
         self._export_tree_rows(self.top_domain_tree, "export_xmlriver_domain_top", "xlsx")
+
+    def _export_domain_keys_csv(self) -> None:
+        self._export_tree_rows(self.domain_keys_tree, "export_xmlriver_domain_keys", "csv")
+
+    def _export_domain_keys_xlsx(self) -> None:
+        self._export_tree_rows(self.domain_keys_tree, "export_xmlriver_domain_keys", "xlsx")
 
     def _export_serpriver_raw_response(self) -> None:
         """Экспортирует сырой ответ SERPRiver в выбранном формате."""
@@ -1466,6 +2568,18 @@ class SeoParserApp:
             return
         self._set_status(f"Экспорт: {export_path.name}")
         messagebox.showinfo("Экспорт", f"Файл сохранен: {export_path.name}")
+
+    def _export_bukvarix_keywords_csv(self) -> None:
+        self._export_tree_rows(self.bukvarix_keyword_tree, "export_bukvarix_keywords", "csv")
+
+    def _export_bukvarix_keywords_xlsx(self) -> None:
+        self._export_tree_rows(self.bukvarix_keyword_tree, "export_bukvarix_keywords", "xlsx")
+
+    def _export_bukvarix_domains_csv(self) -> None:
+        self._export_tree_rows(self.bukvarix_domain_tree, "export_bukvarix_domains", "csv")
+
+    def _export_bukvarix_domains_xlsx(self) -> None:
+        self._export_tree_rows(self.bukvarix_domain_tree, "export_bukvarix_domains", "xlsx")
 
     def _export_tree_rows(self, tree: ttk.Treeview, prefix: str, suffix: str) -> None:
         """Экспортирует строки таблицы в выбранный формат."""
@@ -1522,6 +2636,21 @@ class SeoParserApp:
         for result in sorted_results:
             self._insert_wordstat_result(result)
 
+    def _apply_wordstat_frequency_view(self) -> None:
+        """Применяет фильтр и сортировку к результатам частот Wordstat."""
+        self._clear_tree(self.wordstat_frequency_tree)
+        filtered_results = self._filter_results(
+            self.wordstat_frequency_results,
+            self.wordstat_frequency_filter_var.get(),
+        )
+        sorted_results = self._sort_results(
+            filtered_results,
+            self.wordstat_frequency_sort_var.get(),
+            self.wordstat_frequency_sort_direction_var.get(),
+        )
+        for result in sorted_results:
+            self._insert_wordstat_result(result, self.wordstat_frequency_tree)
+
     def _apply_top_domain_view(self) -> None:
         """Применяет фильтр и сортировку к результатам трекера позиций домена."""
         self._clear_tree(self.top_domain_tree)
@@ -1534,10 +2663,46 @@ class SeoParserApp:
         for result in sorted_results:
             self._insert_top_domain_result(result)
 
+    def _apply_domain_keys_view(self) -> None:
+        """Applies filter and sorting to domain keyword rows."""
+        self._clear_tree(self.domain_keys_tree)
+        filtered_results = self._filter_results(self.domain_keys_results, self.domain_keys_filter_var.get())
+        sorted_results = self._sort_results(
+            filtered_results,
+            self.domain_keys_sort_var.get(),
+            self.domain_keys_sort_direction_var.get(),
+        )
+        for result in sorted_results:
+            self._insert_domain_keys_result(result)
+
     def _apply_serpriver_view(self) -> None:
         """Показывает в кодовом поле последний сырой ответ SERPRiver."""
         self.serpriver_raw_response = self._get_last_serpriver_raw_response(self.serpriver_results)
         self._show_serpriver_raw_response(self.serpriver_raw_response)
+
+    def _apply_bukvarix_keywords_view(self) -> None:
+        """Применяет фильтр и сортировку к результатам Букварикса по словам."""
+        self._clear_tree(self.bukvarix_keyword_tree)
+        filtered_results = self._filter_results(self.bukvarix_keywords_results, self.bukvarix_keyword_filter_var.get())
+        sorted_results = self._sort_results(
+            filtered_results,
+            self.bukvarix_keyword_sort_var.get(),
+            self.bukvarix_keyword_sort_direction_var.get(),
+        )
+        for result in sorted_results:
+            self._insert_bukvarix_keyword_result(result)
+
+    def _apply_bukvarix_domains_view(self) -> None:
+        """Применяет фильтр и сортировку к результатам Букварикса по доменам."""
+        self._clear_tree(self.bukvarix_domain_tree)
+        filtered_results = self._filter_results(self.bukvarix_domains_results, self.bukvarix_domain_filter_var.get())
+        sorted_results = self._sort_results(
+            filtered_results,
+            self.bukvarix_domain_sort_var.get(),
+            self.bukvarix_domain_sort_direction_var.get(),
+        )
+        for result in sorted_results:
+            self._insert_bukvarix_domain_result(result)
 
     def _render_xml_results(
         self,
@@ -1640,6 +2805,26 @@ class SeoParserApp:
             lambda future: self._handle_wordstat_completion(future, len(queries)),
         )
 
+    def _start_wordstat_frequency(self) -> None:
+        """Запускает сбор частот Wordstat."""
+        if self.is_wordstat_frequency_blocked or self.is_wordstat_frequency_running:
+            return
+        try:
+            queries = self._read_queries(self.wordstat_frequency_queries_text)
+            params = self._collect_wordstat_frequency_params()
+        except ValueError as error:
+            messagebox.showerror("Ошибка Wordstat частоты", str(error))
+            return
+
+        self.is_wordstat_frequency_running = True
+        self._set_controls_state(self.xml_shared_controls + self.wordstat_frequency_controls, disabled=True)
+        self._prepare_run(self.wordstat_frequency_tree, self.wordstat_frequency_progress, len(queries))
+        self._set_status(f"Wordstat частоты: обработка {len(queries)} запросов...")
+        self._submit_background_task(
+            self._run_wordstat_frequency_requests(queries, params),
+            lambda future: self._handle_wordstat_frequency_completion(future, len(queries)),
+        )
+
     def _start_top_domain_xmlriver(self) -> None:
         """Запускает трекер позиций домена в Yandex XMLRiver."""
         if self.is_top_domain_blocked or self.is_top_domain_running:
@@ -1659,6 +2844,58 @@ class SeoParserApp:
         self._submit_background_task(
             self._run_top_domain_requests(queries, target_domain, params),
             lambda future: self._handle_top_domain_completion(future, len(queries)),
+        )
+
+    def _start_domain_keys_collect(self) -> None:
+        """Starts domain keyword collection without position checks."""
+        self._start_domain_keys("collect")
+
+    def _start_domain_keys_check(self) -> None:
+        """Starts Yandex position checks for collected domain keywords."""
+        self._start_domain_keys("check")
+
+    def _start_domain_keys_collect_and_check(self) -> None:
+        """Starts domain keyword collection followed by position checks."""
+        self._start_domain_keys("collect_and_check")
+
+    def _start_domain_keys(self, mode: str) -> None:
+        """Starts one domain keyword workflow mode."""
+        if self.is_domain_keys_blocked or self.is_domain_keys_running:
+            return
+        try:
+            target_domain = self._require_value(self.domain_keys_target_var.get(), "Введите домен для сбора ключей")
+            params = self._collect_domain_keys_params()
+            if mode in {"collect", "collect_and_check"}:
+                seed_phrases = self._read_domain_keys_seed_phrases()
+                filters = self._collect_domain_keys_filters()
+                options = self._collect_domain_keys_options()
+                total = len(seed_phrases)
+            else:
+                seed_phrases = []
+                filters = DomainKeywordFilters()
+                options = DomainKeywordOptions()
+                total = len(self.domain_keys_results)
+                if total == 0:
+                    raise ValueError("Сначала соберите ключи или импортируйте результаты")
+        except ValueError as error:
+            messagebox.showerror("Ошибка ключей домена", str(error))
+            return
+
+        self.is_domain_keys_running = True
+        self._set_controls_state(self.xml_shared_controls + self.domain_keys_controls, disabled=True)
+        if mode == "check":
+            self.domain_keys_progress.configure(maximum=max(total, 1), value=0)
+        else:
+            self._prepare_run(self.domain_keys_tree, self.domain_keys_progress, max(total, 1))
+        status_text = {
+            "collect": "Ключи домена: сбор ключей...",
+            "check": "Ключи домена: проверка позиций...",
+            "collect_and_check": "Ключи домена: сбор и проверка позиций...",
+        }[mode]
+        self._set_status(status_text)
+        self._submit_background_task(
+            self._run_domain_keys_requests(mode, target_domain, seed_phrases, params, filters, options),
+            lambda future: self._handle_domain_keys_completion(future),
         )
 
     def _start_serpriver(self) -> None:
@@ -1683,6 +2920,48 @@ class SeoParserApp:
             lambda future: self._handle_serpriver_completion(future, len(queries)),
         )
 
+    def _start_bukvarix_keywords(self) -> None:
+        """Запускает поиск Букварикса по словам."""
+        if self.is_bukvarix_keywords_running:
+            return
+        try:
+            queries = self._read_queries(self.bukvarix_keyword_queries_text)
+            params = self._collect_bukvarix_keyword_params()
+        except ValueError as error:
+            messagebox.showerror("Ошибка Букварикс слова", str(error))
+            return
+
+        self.is_bukvarix_keywords_running = True
+        self._set_controls_state(self.bukvarix_shared_controls + self.bukvarix_keyword_controls, disabled=True)
+        total = 1 if params.get("mode") == "multiple" else len(queries)
+        self._prepare_run(self.bukvarix_keyword_tree, self.bukvarix_keyword_progress, total)
+        self._set_status(f"Букварикс слова: обработка {len(queries)} запросов...")
+        self._submit_background_task(
+            self._run_bukvarix_keywords_requests(queries, params),
+            lambda future: self._handle_bukvarix_keywords_completion(future, total),
+        )
+
+    def _start_bukvarix_domains(self) -> None:
+        """Запускает поиск Букварикса по доменам."""
+        if self.is_bukvarix_domains_running:
+            return
+        try:
+            domains = self._read_queries(self.bukvarix_domain_queries_text)
+            params = self._collect_bukvarix_domain_params()
+        except ValueError as error:
+            messagebox.showerror("Ошибка Букварикс домены", str(error))
+            return
+
+        self.is_bukvarix_domains_running = True
+        self._set_controls_state(self.bukvarix_shared_controls + self.bukvarix_domain_controls, disabled=True)
+        total = 1 if params.get("mode") == "multiple" else len(domains)
+        self._prepare_run(self.bukvarix_domain_tree, self.bukvarix_domain_progress, total)
+        self._set_status(f"Букварикс домены: обработка {len(domains)} доменов...")
+        self._submit_background_task(
+            self._run_bukvarix_domains_requests(domains, params),
+            lambda future: self._handle_bukvarix_domains_completion(future, total),
+        )
+
     def _prepare_run(self, tree: ttk.Treeview | None, progressbar: ttk.Progressbar, total: int) -> None:
         """Очищает результаты и подготавливает progress bar."""
         if tree is not None:
@@ -1694,8 +2973,16 @@ class SeoParserApp:
             self.yandex_results = []
         elif tree is self.wordstat_tree:
             self.wordstat_results = []
+        elif tree is self.wordstat_frequency_tree:
+            self.wordstat_frequency_results = []
         elif tree is self.top_domain_tree:
             self.top_domain_results = []
+        elif tree is self.domain_keys_tree:
+            self.domain_keys_results = []
+        elif tree is self.bukvarix_keyword_tree:
+            self.bukvarix_keywords_results = []
+        elif tree is self.bukvarix_domain_tree:
+            self.bukvarix_domains_results = []
         else:
             self.serpriver_results = []
             self.serpriver_raw_response = ""
@@ -1745,6 +3032,25 @@ class SeoParserApp:
             progress_callback=lambda completed, total, query: self._queue_progress_update(self.wordstat_progress, completed, total),
         )
 
+    async def _run_wordstat_frequency_requests(self, queries: list[str], params: dict[str, str]) -> list[WordstatResult]:
+        """Выполняет запросы частот Wordstat."""
+        client = WordstatClient(
+            user_id=self.xmlriver_user_var.get().strip(),
+            api_key=self.xmlriver_key_var.get().strip(),
+            connect_timeout=self.settings.request_connect_timeout,
+            read_timeout=self.settings.request_read_timeout,
+            max_concurrency=self.settings.xmlriver_max_concurrency,
+        )
+        return await client.fetch_queries(
+            queries=queries,
+            params=params,
+            progress_callback=lambda completed, total, query: self._queue_progress_update(
+                self.wordstat_frequency_progress,
+                completed,
+                total,
+            ),
+        )
+
     async def _run_top_domain_requests(
         self,
         queries: list[str],
@@ -1766,6 +3072,65 @@ class SeoParserApp:
             progress_callback=lambda completed, total, query: self._queue_progress_update(self.top_domain_progress, completed, total),
         )
 
+    async def _run_domain_keys_requests(
+        self,
+        mode: str,
+        target_domain: str,
+        seed_phrases: list[str],
+        params: dict[str, str],
+        filters: DomainKeywordFilters,
+        options: DomainKeywordOptions,
+    ) -> list[DomainKeywordPosition]:
+        """Runs domain keyword collection and/or position checks."""
+        client = DomainKeysClient(
+            user_id=self.xmlriver_user_var.get().strip(),
+            api_key=self.xmlriver_key_var.get().strip(),
+            connect_timeout=self.settings.request_connect_timeout,
+            read_timeout=self.settings.request_read_timeout,
+            max_concurrency=self.settings.xmlriver_max_concurrency,
+        )
+        progress = lambda completed, total, query: self._queue_progress_update(  # noqa: E731
+            self.domain_keys_progress,
+            completed,
+            total,
+        )
+        if mode == "collect":
+            candidates = await client.collect_keywords(
+                domain=target_domain,
+                seed_phrases=seed_phrases,
+                params=params,
+                filters=filters,
+                options=options,
+                progress_callback=progress,
+            )
+            return candidates_to_unchecked_positions(candidates)
+        if mode == "check":
+            candidates = [
+                DomainKeywordCandidate(
+                    phrase=result.phrase,
+                    source=result.source,
+                    score=result.score,
+                    source_url=result.source_url,
+                    title=result.title,
+                    h1=result.h1,
+                )
+                for result in self.domain_keys_results
+            ]
+            return await client.check_positions(
+                domain=target_domain,
+                candidates=candidates,
+                params=params,
+                progress_callback=progress,
+            )
+        return await client.collect_and_check(
+            domain=target_domain,
+            seed_phrases=seed_phrases,
+            params=params,
+            filters=filters,
+            options=options,
+            progress_callback=progress,
+        )
+
     async def _run_serpriver_requests(
         self, queries: list[str], target_domain: str, search_params: dict[str, str], max_concurrency: int,
     ) -> list[SerpRiverResult]:
@@ -1779,6 +3144,50 @@ class SeoParserApp:
         return await client.fetch_queries(
             queries=queries, target_domain=target_domain, search_params=search_params,
             progress_callback=lambda completed, total, query: self._queue_progress_update(self.serpriver_progress, completed, total),
+        )
+
+    async def _run_bukvarix_keywords_requests(
+        self,
+        queries: list[str],
+        params: dict[str, str],
+    ) -> list[BukvarixKeywordResult]:
+        """Выполняет запросы Букварикса по словам."""
+        client = BukvarixClient(
+            api_key=self.bukvarix_key_var.get().strip(),
+            connect_timeout=self.settings.request_connect_timeout,
+            read_timeout=self.settings.request_read_timeout,
+            max_concurrency=self.settings.xmlriver_max_concurrency,
+        )
+        return await client.fetch_keywords(
+            queries=queries,
+            params=params,
+            progress_callback=lambda completed, total, query: self._queue_progress_update(
+                self.bukvarix_keyword_progress,
+                completed,
+                total,
+            ),
+        )
+
+    async def _run_bukvarix_domains_requests(
+        self,
+        domains: list[str],
+        params: dict[str, str],
+    ) -> list[BukvarixDomainResult]:
+        """Выполняет запросы Букварикса по доменам."""
+        client = BukvarixClient(
+            api_key=self.bukvarix_key_var.get().strip(),
+            connect_timeout=self.settings.request_connect_timeout,
+            read_timeout=self.settings.request_read_timeout,
+            max_concurrency=self.settings.xmlriver_max_concurrency,
+        )
+        return await client.fetch_domains(
+            domains=domains,
+            params=params,
+            progress_callback=lambda completed, total, query: self._queue_progress_update(
+                self.bukvarix_domain_progress,
+                completed,
+                total,
+            ),
         )
 
     def _submit_background_task(self, coroutine: Any, on_done: Any) -> Future:
@@ -1840,6 +3249,23 @@ class SeoParserApp:
         self._set_status(f"Wordstat: завершено, строк: {len(results)}")
         messagebox.showinfo("Wordstat", f"Обработка завершена. Строк: {len(results)}")
 
+    def _handle_wordstat_frequency_completion(self, future: Future, total: int) -> None:
+        """Завершает цикл сбора частот Wordstat."""
+        self.is_wordstat_frequency_running = False
+        self._restore_xml_control_sets(self.wordstat_frequency_controls)
+        try:
+            results = future.result()
+        except Exception as error:  # noqa: BLE001
+            logger.error("Wordstat frequency failed | error={}", str(error))
+            self._set_status("Wordstat частоты: ошибка")
+            messagebox.showerror("Ошибка Wordstat частоты", str(error))
+            return
+        self.wordstat_frequency_results = results
+        self._apply_wordstat_frequency_view()
+        self.wordstat_frequency_progress.configure(value=max(total, 1))
+        self._set_status(f"Wordstat частоты: завершено, строк: {len(results)}")
+        messagebox.showinfo("Wordstat частоты", f"Обработка завершена. Строк: {len(results)}")
+
     def _handle_top_domain_completion(self, future: Future, total: int) -> None:
         """Завершает цикл трекера позиций домена."""
         self.is_top_domain_running = False
@@ -1856,6 +3282,23 @@ class SeoParserApp:
         self.top_domain_progress.configure(value=max(total, 1))
         self._set_status(f"Трекер позиций домена: завершено, строк: {len(results)}")
         messagebox.showinfo("Трекер позиций домена", f"Обработка завершена. Строк: {len(results)}")
+
+    def _handle_domain_keys_completion(self, future: Future) -> None:
+        """Completes a domain keyword workflow."""
+        self.is_domain_keys_running = False
+        self._restore_xml_control_sets(self.domain_keys_controls)
+        try:
+            results = future.result()
+        except Exception as error:  # noqa: BLE001
+            logger.error("Domain keys XMLRiver failed | error={}", str(error))
+            self._set_status("Ключи домена: ошибка")
+            messagebox.showerror("Ошибка ключей домена", str(error))
+            return
+        self.domain_keys_results = results
+        self._apply_domain_keys_view()
+        self.domain_keys_progress.configure(value=max(len(results), 1))
+        self._set_status(f"Ключи домена: завершено, строк: {len(results)}")
+        messagebox.showinfo("Ключи домена", f"Обработка завершена. Строк: {len(results)}")
 
     def _handle_serpriver_completion(self, future: Future, total: int) -> None:
         """Завершает цикл SERPRiver."""
@@ -1875,6 +3318,40 @@ class SeoParserApp:
         self._set_status(f"SERPRiver: завершено, строк: {len(results)}")
         messagebox.showinfo("SERPRiver", f"Обработка завершена. Строк: {len(results)}")
 
+    def _handle_bukvarix_keywords_completion(self, future: Future, total: int) -> None:
+        """Завершает цикл Букварикса по словам."""
+        self.is_bukvarix_keywords_running = False
+        self._set_controls_state(self.bukvarix_shared_controls + self.bukvarix_keyword_controls, disabled=False)
+        try:
+            results = future.result()
+        except Exception as error:  # noqa: BLE001
+            logger.error("Bukvarix keywords failed | error={}", str(error))
+            self._set_status("Букварикс слова: ошибка")
+            messagebox.showerror("Ошибка Букварикс слова", str(error))
+            return
+        self.bukvarix_keywords_results = results
+        self._apply_bukvarix_keywords_view()
+        self.bukvarix_keyword_progress.configure(value=max(total, 1))
+        self._set_status(f"Букварикс слова: завершено, строк: {len(results)}")
+        messagebox.showinfo("Букварикс слова", f"Обработка завершена. Строк: {len(results)}")
+
+    def _handle_bukvarix_domains_completion(self, future: Future, total: int) -> None:
+        """Завершает цикл Букварикса по доменам."""
+        self.is_bukvarix_domains_running = False
+        self._set_controls_state(self.bukvarix_shared_controls + self.bukvarix_domain_controls, disabled=False)
+        try:
+            results = future.result()
+        except Exception as error:  # noqa: BLE001
+            logger.error("Bukvarix domains failed | error={}", str(error))
+            self._set_status("Букварикс домены: ошибка")
+            messagebox.showerror("Ошибка Букварикс домены", str(error))
+            return
+        self.bukvarix_domains_results = results
+        self._apply_bukvarix_domains_view()
+        self.bukvarix_domain_progress.configure(value=max(total, 1))
+        self._set_status(f"Букварикс домены: завершено, строк: {len(results)}")
+        messagebox.showinfo("Букварикс домены", f"Обработка завершена. Строк: {len(results)}")
+
     def _restore_xml_control_sets(self, tab_controls: list[tuple[tk.Widget, str]]) -> None:
         """Восстанавливает доступность общих полей XMLRiver и подвкладки."""
         self._set_controls_state(self.xml_shared_controls, disabled=False)
@@ -1885,8 +3362,12 @@ class SeoParserApp:
             self._set_controls_state(self.yandex_controls, disabled=True)
         if self.is_wordstat_blocked:
             self._set_controls_state(self.wordstat_controls, disabled=True)
+        if self.is_wordstat_frequency_blocked:
+            self._set_controls_state(self.wordstat_frequency_controls, disabled=True)
         if self.is_top_domain_blocked:
             self._set_controls_state(self.top_domain_controls, disabled=True)
+        if self.is_domain_keys_blocked:
+            self._set_controls_state(self.domain_keys_controls, disabled=True)
 
     # ── Утилиты UI ──
 
@@ -1947,7 +3428,7 @@ class SeoParserApp:
         tags = (TREE_ERROR_TAG,) if result.error_code else ()
         tree.insert("", "end", values=values, tags=tags)
 
-    def _insert_wordstat_result(self, result: WordstatResult) -> None:
+    def _insert_wordstat_result(self, result: WordstatResult, tree: ttk.Treeview | None = None) -> None:
         """Добавляет строку Wordstat в таблицу."""
         values = (
             result.query,
@@ -1956,7 +3437,8 @@ class SeoParserApp:
             result.value or result.error_code,
         )
         tags = (TREE_ERROR_TAG,) if result.error_code else ()
-        self.wordstat_tree.insert("", "end", values=values, tags=tags)
+        target_tree = tree or self.wordstat_tree
+        target_tree.insert("", "end", values=values, tags=tags)
 
     def _insert_top_domain_result(self, result: XmlRiverDomainTopResult) -> None:
         """Добавляет строку трекера позиций домена."""
@@ -1968,6 +3450,64 @@ class SeoParserApp:
         )
         tags = (TREE_ERROR_TAG,) if result.error_code else ()
         self.top_domain_tree.insert("", "end", values=values, tags=tags)
+
+    def _insert_domain_keys_result(self, result: DomainKeywordPosition) -> None:
+        """Adds a domain keyword row."""
+        values = (
+            result.phrase,
+            result.position or ("Ошибка" if result.error_code else ""),
+            result.url or result.error_code,
+            result.domain or result.error_message,
+            self._format_domain_keys_source(result.source),
+            result.score,
+            result.source_url,
+        )
+        tags = (TREE_ERROR_TAG,) if result.error_code else ()
+        self.domain_keys_tree.insert("", "end", values=values, tags=tags)
+
+    def _insert_bukvarix_keyword_result(self, result: BukvarixKeywordResult) -> None:
+        """Добавляет строку Букварикса по словам."""
+        values = (
+            result.source_query,
+            result.keyword or result.error_message,
+            result.words_count,
+            result.chars_count,
+            result.broad_frequency,
+            result.exact_frequency or result.error_code,
+            result.raw,
+        )
+        tags = (TREE_ERROR_TAG,) if result.error_code else ()
+        self.bukvarix_keyword_tree.insert("", "end", values=values, tags=tags)
+
+    def _insert_bukvarix_domain_result(self, result: BukvarixDomainResult) -> None:
+        """Добавляет строку Букварикса по доменам."""
+        values = (
+            result.source_domain,
+            result.keyword or result.error_message,
+            result.words_count,
+            result.chars_count,
+            result.serp_results,
+            result.broad_frequency,
+            result.exact_frequency,
+            result.position or result.error_code,
+            result.raw,
+        )
+        tags = (TREE_ERROR_TAG,) if result.error_code else ()
+        self.bukvarix_domain_tree.insert("", "end", values=values, tags=tags)
+
+    def _format_domain_keys_source(self, source: str) -> str:
+        """Formats internal domain-key source codes for display."""
+        source_labels = {
+            "serp": "SERP",
+            "page": "Страница",
+            "mixed": "SERP + Страница",
+            "tips": "Подсказки",
+        }
+        parts = [part for part in source.split("+") if part]
+        if not parts:
+            return ""
+        labels = [source_labels.get(part, part) for part in dict.fromkeys(parts)]
+        return " + ".join(labels)
 
     def _get_last_serpriver_raw_response(self, results: list[SerpRiverResult]) -> str:
         """Возвращает последний непустой сырой ответ SERPRiver."""
@@ -1984,6 +3524,17 @@ class SeoParserApp:
         rows = [row.strip() for row in text_widget.get("1.0", "end").splitlines() if row.strip()]
         if not rows:
             raise ValueError("Введите хотя бы один запрос")
+        return rows
+
+    def _read_optional_text_rows(self, text_widget: tk.Text) -> list[str]:
+        """Возвращает непустые строки из необязательного текстового поля."""
+        return [row.strip() for row in text_widget.get("1.0", "end").splitlines() if row.strip()]
+
+    def _read_domain_keys_seed_phrases(self) -> list[str]:
+        """Reads plus phrases used as site: seeds and positive phrase filters."""
+        rows = list(parse_filter_text(self.domain_keys_include_text.get("1.0", "end")))
+        if not rows:
+            raise ValueError("Введите хотя бы одну плюс-фразу / seed")
         return rows
 
     def _collect_google_params(self) -> dict[str, str]:
@@ -2037,6 +3588,46 @@ class SeoParserApp:
             ) or "words",
         }
 
+    def _collect_wordstat_frequency_params(self) -> dict[str, str]:
+        """Собирает параметры Wordstat для сбора частот."""
+        self._require_xml_credentials()
+        region_id = self._get_reference_value(
+            "yandex_geo",
+            self.wordstat_frequency_region_var.get(),
+            "Выберите регион",
+        )
+        extra_regions = ",".join(
+            chunk.strip() for chunk in self.wordstat_frequency_regions_extra_var.get().split(",") if chunk.strip()
+        )
+        regions = ",".join([region_id, extra_regions]) if extra_regions else region_id
+        start_value = self._normalize_wordstat_api_date(
+            self.wordstat_frequency_start_var.get(),
+            "Укажите корректную дату начала в формате dd.mm.yyyy",
+        )
+        end_value = self._normalize_wordstat_api_date(
+            self.wordstat_frequency_end_var.get(),
+            "Укажите корректную дату окончания в формате dd.mm.yyyy",
+        )
+        if bool(start_value) != bool(end_value):
+            raise ValueError("Укажите обе даты периода: начало и окончание")
+        return {
+            "regions": regions,
+            "device": self._get_static_value(
+                self.wordstat_frequency_device_var.get(),
+                WORDSTAT_DEVICE_VALUES,
+                "",
+                allow_empty=True,
+            ),
+            "period": self._get_static_value(
+                self.wordstat_frequency_period_var.get(),
+                WORDSTAT_PERIOD_VALUES,
+                "Выберите группировку",
+            ),
+            "start": start_value,
+            "end": end_value,
+            "pagetype": "history",
+        }
+
     def _collect_top_domain_params(self) -> dict[str, str]:
         """Собирает параметры трекера позиций домена в Yandex XMLRiver."""
         self._require_xml_credentials()
@@ -2061,6 +3652,55 @@ class SeoParserApp:
                 "Выберите устройство",
             ),
         }
+
+    def _collect_domain_keys_params(self) -> dict[str, str]:
+        """Collects Yandex XMLRiver params for domain keyword discovery and position checks."""
+        self._require_xml_credentials()
+        depth = self._get_static_value(
+            self.domain_keys_depth_var.get(),
+            TOP_DOMAIN_DEPTH_VALUES,
+            "Выберите глубину топа от 10 до 50",
+        )
+        return {
+            "engine": "yandex",
+            "groupby": depth,
+            "lr": self._get_reference_value("yandex_geo", self.domain_keys_lr_var.get(), "Выберите регион"),
+            "domain": self._get_static_value(
+                self.domain_keys_search_domain_var.get(),
+                YANDEX_DOMAIN_VALUES,
+                "Выберите домен Яндекса",
+            ),
+            "lang": self._require_value(self.domain_keys_lang_var.get(), "Введите язык"),
+            "device": self._get_static_value(
+                self.domain_keys_device_var.get(),
+                DEVICE_VALUES,
+                "Выберите устройство",
+            ),
+        }
+
+    def _collect_domain_keys_filters(self) -> DomainKeywordFilters:
+        """Collects keyword and URL filters for domain keyword discovery."""
+        return DomainKeywordFilters(
+            include_words=parse_filter_text(self.domain_keys_include_text.get("1.0", "end")),
+            exclude_words=parse_filter_text(self.domain_keys_exclude_text.get("1.0", "end")),
+            url_include=parse_filter_text(self.domain_keys_url_include_text.get("1.0", "end")),
+            url_exclude=parse_filter_text(self.domain_keys_url_exclude_text.get("1.0", "end")),
+        )
+
+    def _collect_domain_keys_options(self) -> DomainKeywordOptions:
+        """Collects collection limits for domain keyword discovery."""
+        fetch_mode = self._get_static_value(
+            self.domain_keys_fetch_mode_var.get(),
+            DOMAIN_KEYS_FETCH_MODES,
+            "Выберите режим парсинга",
+        )
+        return DomainKeywordOptions(
+            max_urls=self._parse_positive_int(self.domain_keys_url_limit_var.get(), "Лимит URL"),
+            max_keywords=self._parse_positive_int(self.domain_keys_keyword_limit_var.get(), "Лимит ключей"),
+            pages_per_seed=self._parse_positive_int(self.domain_keys_pages_per_seed_var.get(), "Страниц на seed"),
+            fetch_pages=fetch_mode == DOMAIN_KEYS_FETCH_MODES[1],
+            use_tips=bool(self.domain_keys_use_tips_var.get()),
+        )
 
     def _collect_serpriver_params(self) -> dict[str, str]:
         """Собирает параметры SERPRiver."""
@@ -2088,10 +3728,89 @@ class SeoParserApp:
             search_params["lr"] = str(self._parse_non_negative_int(self.serpriver_lr_var.get(), "lr"))
         return search_params
 
+    def _collect_bukvarix_keyword_params(self) -> dict[str, str]:
+        """Собирает параметры API Букварикса для поиска по словам."""
+        self._require_bukvarix_key()
+        mode = "multiple" if self.bukvarix_keyword_mode_var.get() == BUKVARIX_KEYWORD_MODE_VALUES[1] else "single"
+        params = {
+            "mode": mode,
+            "num": str(self._parse_positive_int(self.bukvarix_keyword_num_var.get(), "num")),
+            "format": self._get_static_value(self.bukvarix_keyword_format_var.get(), BUKVARIX_FORMAT_VALUES, "Выберите format"),
+            "bom": self._get_static_value(self.bukvarix_keyword_bom_var.get(), BUKVARIX_BOOL_VALUES, "", allow_empty=True),
+            "header": self._get_static_value(self.bukvarix_keyword_header_var.get(), BUKVARIX_BOOL_VALUES, "", allow_empty=True),
+            "json_type": self._get_static_value(
+                self.bukvarix_keyword_json_type_var.get(),
+                BUKVARIX_JSON_TYPE_VALUES,
+                "Выберите json_type",
+            ),
+            "report_type": self._get_static_value(
+                self.bukvarix_keyword_report_type_var.get(),
+                BUKVARIX_REPORT_TYPE_VALUES,
+                "Выберите report_type",
+            ),
+            "result_count": self._get_static_value(
+                self.bukvarix_keyword_result_count_var.get(),
+                BUKVARIX_BOOL_VALUES,
+                "",
+                allow_empty=True,
+            ),
+            "q2": "\r\n".join(self._read_optional_text_rows(self.bukvarix_keyword_q2_text)),
+            "broad_from": self._optional_non_negative_int(self.bukvarix_keyword_broad_from_var.get(), "broad_from"),
+            "broad_to": self._optional_non_negative_int(self.bukvarix_keyword_broad_to_var.get(), "broad_to"),
+            "exact_from": self._optional_non_negative_int(self.bukvarix_keyword_exact_from_var.get(), "exact_from"),
+            "exact_to": self._optional_non_negative_int(self.bukvarix_keyword_exact_to_var.get(), "exact_to"),
+            "length_from": self._optional_non_negative_int(self.bukvarix_keyword_length_from_var.get(), "length_from"),
+            "length_to": self._optional_non_negative_int(self.bukvarix_keyword_length_to_var.get(), "length_to"),
+            "words_from": self._optional_non_negative_int(self.bukvarix_keyword_words_from_var.get(), "words_from"),
+            "words_to": self._optional_non_negative_int(self.bukvarix_keyword_words_to_var.get(), "words_to"),
+        }
+        return {key: value for key, value in params.items() if value != ""}
+
+    def _collect_bukvarix_domain_params(self) -> dict[str, str]:
+        """Собирает параметры API Букварикса для поиска по доменам."""
+        self._require_bukvarix_key()
+        mode_labels = {
+            BUKVARIX_DOMAIN_MODE_VALUES[0]: "single",
+            BUKVARIX_DOMAIN_MODE_VALUES[1]: "compare",
+            BUKVARIX_DOMAIN_MODE_VALUES[2]: "multiple",
+        }
+        mode = mode_labels.get(self.bukvarix_domain_mode_var.get(), "single")
+        params = {
+            "mode": mode,
+            "num": str(self._parse_positive_int(self.bukvarix_domain_num_var.get(), "num")),
+            "format": self._get_static_value(self.bukvarix_domain_format_var.get(), BUKVARIX_FORMAT_VALUES, "Выберите format"),
+            "bom": self._get_static_value(self.bukvarix_domain_bom_var.get(), BUKVARIX_BOOL_VALUES, "", allow_empty=True),
+            "header": self._get_static_value(self.bukvarix_domain_header_var.get(), BUKVARIX_BOOL_VALUES, "", allow_empty=True),
+            "json_type": self._get_static_value(
+                self.bukvarix_domain_json_type_var.get(),
+                BUKVARIX_JSON_TYPE_VALUES,
+                "Выберите json_type",
+            ),
+            "region": self._get_static_value(self.bukvarix_domain_region_var.get(), BUKVARIX_REGION_VALUES, "Выберите region"),
+            "comparison_type": self._get_static_value(
+                self.bukvarix_domain_comparison_type_var.get(),
+                BUKVARIX_COMPARISON_TYPE_VALUES,
+                "Выберите comparison_type",
+            ),
+            "result_count": self._get_static_value(
+                self.bukvarix_domain_result_count_var.get(),
+                BUKVARIX_BOOL_VALUES,
+                "",
+                allow_empty=True,
+            ),
+        }
+        if mode == "compare":
+            params["q2"] = self._require_value(self.bukvarix_domain_second_var.get(), "Введите q2: второй домен")
+        return {key: value for key, value in params.items() if value != ""}
+
     def _require_xml_credentials(self) -> None:
         """Проверяет общие учетные данные XMLRiver."""
         self._require_value(self.xmlriver_user_var.get(), "Введите User ID XMLRiver")
         self._require_value(self.xmlriver_key_var.get(), "Введите API Key XMLRiver")
+
+    def _require_bukvarix_key(self) -> None:
+        """Проверяет ключ API Букварикса."""
+        self._require_value(self.bukvarix_key_var.get(), "Введите API Key Букварикса")
 
     def _get_reference_value(self, catalog_name: str, label: str, error_message: str) -> str:
         """Возвращает значение справочника по выбранному label."""
@@ -2125,6 +3844,18 @@ class SeoParserApp:
         if parsed_date is None:
             raise ValueError(error_message)
         return parsed_date.strftime(WORDSTAT_DATE_FORMAT)
+
+    def _normalize_wordstat_api_date(self, value: str, error_message: str) -> str:
+        """Проверяет и нормализует дату Wordstat New в формате dd.mm.yyyy."""
+        cleaned_value = value.strip()
+        if not cleaned_value:
+            return ""
+        for date_format in ("%d.%m.%Y", WORDSTAT_DATE_FORMAT):
+            try:
+                return datetime.strptime(cleaned_value, date_format).strftime("%d.%m.%Y")
+            except ValueError:
+                continue
+        raise ValueError(error_message)
 
     def _get_static_value(
         self,
@@ -2167,6 +3898,13 @@ class SeoParserApp:
         if parsed_value < 0:
             raise ValueError(f"Поле {field_name} не может быть отрицательным")
         return parsed_value
+
+    def _optional_non_negative_int(self, value: str, field_name: str) -> str:
+        """Возвращает пустую строку или проверенное неотрицательное число."""
+        cleaned_value = value.strip()
+        if not cleaned_value:
+            return ""
+        return str(self._parse_non_negative_int(cleaned_value, field_name))
 
     def run(self) -> None:
         """Запускает цикл обработки событий tkinter."""

@@ -63,6 +63,7 @@ class AppSettings(BaseSettings):
     xmlriver_user_id: str = Field(default="", alias="XMLRIVER_USER_ID")
     xmlriver_api_key: str = Field(default="", alias="XMLRIVER_API_KEY")
     serpriver_api_key: str = Field(default="", alias="SERPRIVER_API_KEY")
+    bukvarix_api_key: str = Field(default="", alias="BUKVARIX_API_KEY")
     google_last_location_label: str = Field(default="", alias="GOOGLE_LAST_LOCATION_LABEL")
     yandex_last_region_label: str = Field(default="", alias="YANDEX_LAST_REGION_LABEL")
     wordstat_last_region_label: str = Field(default="", alias="WORDSTAT_LAST_REGION_LABEL")
@@ -87,6 +88,7 @@ def save_settings(settings: AppSettings) -> None:
         f"XMLRIVER_USER_ID={settings.xmlriver_user_id}",
         f"XMLRIVER_API_KEY={settings.xmlriver_api_key}",
         f"SERPRIVER_API_KEY={settings.serpriver_api_key}",
+        f"BUKVARIX_API_KEY={settings.bukvarix_api_key}",
         f"GOOGLE_LAST_LOCATION_LABEL={settings.google_last_location_label}",
         f"YANDEX_LAST_REGION_LABEL={settings.yandex_last_region_label}",
         f"WORDSTAT_LAST_REGION_LABEL={settings.wordstat_last_region_label}",

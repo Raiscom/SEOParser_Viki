@@ -121,7 +121,7 @@ class WordstatClient:
             return [WordstatResult(query=query, error_code="history_format", error_message="Некорректный формат history-ответа")]
 
         result_rows: list[WordstatResult] = []
-        total_value = payload.get("totalValue")
+        total_value = payload.get("totalValue", payload.get("TotalValue"))
         if total_value is not None:
             result_rows.append(
                 WordstatResult(query=query, result_type="total", phrase="Общее значение", value=str(total_value)),

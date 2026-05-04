@@ -227,6 +227,12 @@ class XmlRiverClient:
             logger.error("API error | code={} query={} error={}", "xml_parse", query, str(error))
             return [XmlRiverResult(query=query, error_code="xml_parse", error_message=str(error))]
 
+        api_error = self._read_api_error(root)
+        if api_error is not None:
+            error_code, error_message = api_error
+            logger.error("API error | code={} query={} error={}", error_code, query, error_message)
+            return [XmlRiverResult(query=query, error_code=error_code, error_message=error_message)]
+
         results: list[XmlRiverResult] = []
         for index, group in enumerate(root.findall(".//group"), start=1):
             doc = group.find("doc")
@@ -240,12 +246,33 @@ class XmlRiverClient:
                     url=self._read_text(doc, "url"),
                     domain=self._read_text(doc, "domain"),
                     title=self._read_text(doc, "title"),
-                    snippet=self._read_text(doc, "snippet"),
+                    snippet=self._read_text(doc, "snippet") or self._read_first_passage(doc),
                 ),
             )
         if results:
             return results
         return [XmlRiverResult(query=query, error_code="empty", error_message="Пустой ответ XMLRiver")]
+
+    def _read_api_error(self, root: ET.Element) -> tuple[str, str] | None:
+        """Reads a structured XMLRiver/Yandex XML error node if present."""
+        error_node = root.find(".//error")
+        if error_node is None:
+            return None
+        error_code = error_node.attrib.get("code", "").strip()
+        error_message = (error_node.text or "").strip()
+        code_node_text = self._read_text(error_node, "code")
+        message_node_text = self._read_text(error_node, "message")
+        return (
+            error_code or code_node_text or "xmlriver_error",
+            error_message or message_node_text or "XMLRiver returned an error",
+        )
+
+    def _read_first_passage(self, parent: ET.Element) -> str:
+        """Returns first organic passage text when XMLRiver does not expose a snippet tag."""
+        passage_node = parent.find("./passages/passage")
+        if passage_node is None or passage_node.text is None:
+            return ""
+        return passage_node.text.strip()
 
     def _read_text(self, parent: ET.Element, tag_name: str) -> str:
         """Возвращает текст первого найденного тега или пустую строку."""
