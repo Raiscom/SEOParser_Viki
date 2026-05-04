@@ -30,6 +30,33 @@ class XmlRiverDomainTopResult(BaseModel):
     error_code: str = ""
 
 
+class DomainKeywordCandidate(BaseModel):
+    """Describes a generated keyword candidate for a domain."""
+
+    phrase: str
+    source: str = ""
+    score: float = 0.0
+    source_url: str = ""
+    title: str = ""
+    h1: str = ""
+
+
+class DomainKeywordPosition(BaseModel):
+    """Describes a generated domain keyword and its Yandex position check."""
+
+    phrase: str
+    position: str = ""
+    url: str = ""
+    domain: str = ""
+    source: str = ""
+    score: float = 0.0
+    source_url: str = ""
+    title: str = ""
+    h1: str = ""
+    error_message: str = ""
+    error_code: str = ""
+
+
 class SerpRiverResult(BaseModel):
     """Описывает одну строку результата SERPRiver."""
 
@@ -50,6 +77,36 @@ class WordstatResult(BaseModel):
     result_type: str = ""
     phrase: str = ""
     value: str = ""
+    error_message: str = ""
+    error_code: str = ""
+
+
+class BukvarixKeywordResult(BaseModel):
+    """Describes one Bukvarix keyword search row."""
+
+    source_query: str
+    keyword: str = ""
+    words_count: str = ""
+    chars_count: str = ""
+    broad_frequency: str = ""
+    exact_frequency: str = ""
+    raw: str = ""
+    error_message: str = ""
+    error_code: str = ""
+
+
+class BukvarixDomainResult(BaseModel):
+    """Describes one Bukvarix domain search row."""
+
+    source_domain: str
+    keyword: str = ""
+    words_count: str = ""
+    chars_count: str = ""
+    serp_results: str = ""
+    broad_frequency: str = ""
+    exact_frequency: str = ""
+    position: str = ""
+    raw: str = ""
     error_message: str = ""
     error_code: str = ""
 
