@@ -1,41 +1,170 @@
 # SEOParser Viki
 
-`SEOParser Viki` - Windows-приложение на Python для работы с XMLRiver и SERPRiver. Программа предоставляет графический интерфейс для проверки позиций в Google и Yandex, получения данных Wordstat и анализа домена в выдаче SERP.
+`SEOParser Viki` - Windows-приложение с графическим интерфейсом для SEO-задач через XMLRiver, SERPRiver и Букварикс.
 
 ## Возможности
 
-- Проверка позиций через XMLRiver для Google и Yandex.
-- Получение данных Wordstat через XMLRiver Wordstat New.
-- Проверка наличия домена в выдаче через SERPRiver.
+- Проверка позиций в Google и Yandex через XMLRiver.
+- Пакетная обработка XMLRiver SERP-запросов по 10 ключей за раз по умолчанию. Если передать 100 ключей, программа отправит 10 последовательных пачек.
+- Трекер позиций домена в выдаче Yandex XMLRiver.
+- Сбор фраз по домену и проверка позиций собранных фраз.
+- Получение Wordstat-данных через XMLRiver Wordstat New.
+- Проверка домена через SERPRiver.
+- Получение данных Букварикс по словам и доменам.
 - Импорт запросов из `CSV` и `XLSX`.
 - Экспорт результатов в `CSV` и `XLSX`.
-- Работа со справочниками регионов, языков и доменов из `data/references`.
-- Сохранение настроек API и лимитов в локальный файл `.env`.
-- Serpriver документация API - https://serpriver.ru/docs-api/
-- XMLRIVER документация API - https://xmlriver.com/apidoc/
+- Справочники регионов, стран, языков и доменов из `data/references`.
+- Сохранение API-ключей и настроек в локальный файл `.env`.
 
-## Стек и зависимости
+Документация API:
 
-Основные runtime-зависимости перечислены в [requirements.txt](requirements.txt):
+- XMLRiver: <https://xmlriver.com/apidoc/>
+- SERPRiver: <https://serpriver.ru/docs-api/>
 
-- `aiohttp`
-- `loguru`
-- `openpyxl`
-- `pandas`
-- `pydantic`
-- `pydantic-settings`
-- `python-dotenv`
-- `tenacity`
-- `ttkbootstrap`
+## Готовая portable-версия для пользователя
 
-Для сборки portable-версии используется отдельный файл [requirements-build.txt](requirements-build.txt), который добавляет `PyInstaller`.
+Это основной вариант для обычного пользователя.
 
-## Требования
+1. Скачайте архив готовой portable-сборки.
+2. Распакуйте архив в любую папку, например `C:\Apps\SEOParser_Viki`.
+3. Запустите `SEOParser_Viki.exe`.
+4. Введите API-ключи во вкладках программы и нажмите `Сохранить`.
+
+Portable-сборка уже содержит Python и runtime-библиотеки внутри папки приложения. Пользователю не нужно устанавливать Python, создавать `.venv` или ставить зависимости через `pip`.
+
+В portable-папке важны следующие файлы и каталоги:
+
+- `SEOParser_Viki.exe` - запуск приложения.
+- `.env` - локальные API-ключи и настройки. Создаётся программой или вручную из `.env.example`.
+- `.env.example` - шаблон настроек.
+- `parser.log` - лог работы приложения.
+- `data/references` - справочники для регионов, стран, языков и доменов.
+- `VERSION.txt` - версия portable-сборки.
+- `UPDATE.md`, `update_portable.cmd`, `update_portable.ps1` - обновление старой portable-папки.
+
+## Обновление portable-версии
+
+Для обновления старой portable-папки используйте файлы из новой сборки:
+
+1. Закройте старую программу.
+2. Распакуйте новую portable-сборку в отдельную временную папку.
+3. Запустите из новой папки:
+
+```cmd
+update_portable.cmd "C:\Path\To\Old\SEOParser_Viki"
+```
+
+Скрипт обновит приложение и внутренние runtime-файлы, но сохранит пользовательские `.env`, `parser.log` и существующую папку `data`.
+
+Если нужно заменить справочники из новой сборки, используйте PowerShell-вариант:
+
+```powershell
+.\update_portable.ps1 -TargetPath "C:\Path\To\Old\SEOParser_Viki" -UpdateReferences
+```
+
+Подробная инструкция находится в [UPDATE.md](UPDATE.md).
+
+## Запуск из исходников для разработчика
+
+Требования:
 
 - Windows 10/11.
-- Python 3.12+ для запуска из исходников.
-- Доступ к API XMLRiver и SERPRiver.
-- Локальные справочники в каталоге `data/references`.
+- Python 3.12 или новее.
+- Доступ к API XMLRiver, SERPRiver или Букварикс, если нужны соответствующие функции.
+
+Подготовка:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Запуск:
+
+```powershell
+python main.py
+```
+
+Или через вспомогательный скрипт:
+
+```powershell
+.\run.ps1
+```
+
+Для `cmd.exe`:
+
+```cmd
+run.cmd
+```
+
+Если при запуске `run.ps1` или `run.cmd` появляется `Python not found`, значит локальное окружение `.venv` не создано или зависимости установлены не в эту папку.
+
+## Сборка portable `.exe`
+
+Сборка выполняется через PyInstaller в режиме `onedir`.
+
+Подготовьте окружение:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -r requirements-build.txt
+```
+
+Запустите сборку:
+
+```powershell
+.\build_exe.ps1
+```
+
+Или из `cmd.exe`:
+
+```cmd
+build_exe.cmd
+```
+
+Готовая portable-папка будет создана здесь:
+
+```text
+dist/
+  SEOParser_Viki/
+    SEOParser_Viki.exe
+    _internal/
+    data/
+      references/
+    .env.example
+    VERSION.txt
+    UPDATE.md
+    update_portable.cmd
+    update_portable.ps1
+```
+
+Перед передачей пользователю упакуйте папку `dist/SEOParser_Viki` в архив. Пользователь должен распаковать её и запустить `SEOParser_Viki.exe`.
+
+Файл `SEOParser_Viki.spec` является локальным артефактом PyInstaller. Он может содержать абсолютные пути конкретного компьютера, поэтому не используйте его как основную инструкцию сборки. Основной способ сборки - `build_exe.ps1` или `build_exe.cmd`.
+
+## Настройки `.env`
+
+Пример находится в [.env.example](.env.example).
+
+Основные параметры:
+
+```env
+XMLRIVER_USER_ID=
+XMLRIVER_API_KEY=
+SERPRIVER_API_KEY=
+BUKVARIX_API_KEY=free
+REQUEST_CONNECT_TIMEOUT=5
+REQUEST_READ_TIMEOUT=30
+XMLRIVER_MAX_CONCURRENCY=10
+SERPRIVER_MAX_CONCURRENCY=10
+IMPORT_ROW_LIMIT=10000
+```
+
+`XMLRIVER_MAX_CONCURRENCY` управляет размером пачки XMLRiver SERP-запросов. Значение `10` означает, что программа отправляет до 10 запросов одновременно, ждёт завершения этой пачки и только потом отправляет следующие 10.
 
 ## Структура проекта
 
@@ -50,182 +179,59 @@ SEOParser_Viki/
       domains.xlsx
       geo.csv
       langs.xlsx
+      lr.csv
       yandex_geo.csv
-      .gitkeep
+  tests/
   .env.example
-  LICENSE
+  build_exe.cmd
+  build_exe.ps1
   main.py
   README.md
   requirements.txt
   requirements-build.txt
   run.cmd
   run.ps1
+  update_portable.cmd
+  update_portable.ps1
 ```
 
-Примечания:
+`data/references` должен быть рядом с исходниками при запуске из кода и рядом с `SEOParser_Viki.exe` в portable-сборке. Если справочников нет, приложение запустится, но часть полей и функций будет недоступна.
 
-- Файл `.env` не хранится в репозитории и создаётся локально.
-- Каталог `data/references` должен присутствовать и рядом с исходниками, и рядом с portable-сборкой.
-- Файл `data/references/lr.csv` сейчас не используется кодом и не обязателен для работы приложения.
+## Импорт и экспорт
 
-## Настройка окружения
+Входные файлы:
 
-1. Создайте виртуальное окружение:
+- `CSV` - используется первый столбец, разделитель определяется автоматически.
+- `XLSX` - используется первый лист и первый столбец.
+
+Выходные файлы:
+
+- `CSV` сохраняется в `UTF-8 with BOM`, чтобы Excel корректно открывал русский текст.
+- `XLSX` создаётся через `openpyxl`.
+
+## Локальные файлы и артефакты
+
+- `.env` хранит локальные ключи и не должен попадать в репозиторий.
+- `parser.log` хранит лог приложения и не нужен в коммитах.
+- `build/` и `dist/` создаются при сборке и не должны коммититься.
+- `.venv/` является локальным окружением разработчика и не входит в portable-сборку.
+
+## Проверка тестов
+
+Проект использует стандартный `unittest`:
 
 ```powershell
-python -m venv .venv
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-2. Активируйте его:
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-3. Установите зависимости:
-
-```powershell
-pip install -r requirements.txt
-```
-
-4. Создайте файл `.env` на основе шаблона:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-## Запуск приложения
-
-Из исходников:
-
-```powershell
-python main.py
-```
-
-Или через вспомогательные скрипты, если используется локальная `.venv`:
-
-```powershell
-.\run.ps1
-```
-
-```cmd
-run.cmd
-```
-
-## Использование
-
-1. Запустите приложение.
-2. Введите API-ключи XMLRiver и SERPRiver или сохраните их в `.env`.
-3. Выберите нужный раздел интерфейса:
-   - XMLRiver для Google, Yandex и Wordstat.
-   - SERPRiver для поиска домена в выдаче.
-4. Введите запросы вручную или импортируйте их из `CSV/XLSX`.
-5. Запустите обработку и при необходимости экспортируйте результаты.
-
-## Форматы ввода и вывода
-
-Вход:
-
-- `CSV`: используется первый столбец, разделитель определяется автоматически.
-- `XLSX`: используется первый лист и первый столбец.
-
-Выход:
-
-- `CSV` в `UTF-8 with BOM`, удобный для Excel.
-- `XLSX` через `openpyxl`.
-
-## Справочники
-
-Приложение ожидает следующие файлы в `data/references`:
-
-- `geo.csv` - локации Google.
-- `countries.xlsx` - страны Google.
-- `langs.xlsx` - языки Google.
-- `domains.xlsx` - домены Google.
-- `yandex_geo.csv` - регионы Yandex.
-
-При отсутствии этих файлов приложение запустится, но часть функций будет заблокирована, а пользователь увидит сообщения об ошибках загрузки справочников.
-
-## Логи и локальные файлы
-
-- Лог приложения сохраняется в `parser.log` рядом с исполняемым файлом или рядом с исходниками.
-- Настройки сохраняются в локальный `.env` рядом с приложением.
-- Build-артефакты `build/` и `dist/` не должны коммититься в репозиторий.
-
-## Portable `.exe`
-
-Для Windows рекомендуется собирать приложение в режиме `PyInstaller onedir`. Этот режим соответствует текущей архитектуре проекта: приложение читает `.env`, записывает `parser.log` и ожидает каталог `data/references` рядом с `.exe`.
-
-### Подготовка к сборке
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install -r requirements-build.txt
-```
-
-### Сборка
-
-Используйте один из скриптов:
-
-```powershell
-.\build_exe.ps1
-```
-
-```cmd
-build_exe.cmd
-```
-
-После сборки ожидаемая структура дистрибутива:
-
-```text
-dist/
-  SEOParser_Viki/
-    SEOParser_Viki.exe
-    _internal/
-    data/
-      references/
-        countries.xlsx
-        domains.xlsx
-        geo.csv
-        langs.xlsx
-        yandex_geo.csv
-    .env.example
-```
-
-Что нужно сделать перед передачей пользователю:
-
-- Скопировать `.env.example` в `.env`.
-- Заполнить API-ключи.
-- Убедиться, что каталог `data/references` лежит рядом с `SEOParser_Viki.exe`.
-
-### Мягкое обновление portable-версии
-
-Portable-сборка уже содержит Python и runtime-библиотеки, поэтому пользователю не нужно ставить зависимости заново.
-
-Для обновления старой portable-папки распакуйте новую сборку в отдельную папку и запустите из нее:
-
-```cmd
-update_portable.cmd "C:\Path\To\Old\SEOParser_Viki"
-```
-
-Скрипт обновит приложение и `_internal`, но сохранит пользовательские `.env`, `parser.log` и существующую папку `data`.
-Если нужно заменить справочники из новой сборки, используйте `update_portable.ps1` с флагом `-UpdateReferences`.
-
-Номер версии отображается в заголовке окна, в нижней строке статуса и в файле `VERSION.txt` внутри portable-папки.
-
+`pytest` не требуется для обычной проверки, если он отдельно не установлен в окружение разработчика.
 
 ## Типовые проблемы
 
-- `Python not found` при запуске `run.ps1` или `run.cmd`.
-  Значит, не создано локальное окружение `.venv` или в нём не установлен Python.
-- Ошибки импорта `CSV/XLSX`.
-  Проверьте, что в файле есть данные в первом столбце и не превышен `IMPORT_ROW_LIMIT`.
-- Пустые списки регионов и локаций.
-  Проверьте наличие файлов в `data/references`.
-- Ошибки API.
-  Проверьте корректность `XMLRIVER_USER_ID`, `XMLRIVER_API_KEY` и `SERPRIVER_API_KEY`.
+- `Python not found` при запуске `run.ps1` или `run.cmd`: создайте `.venv` и установите зависимости.
+- Пустые списки регионов или стран: проверьте наличие файлов в `data/references`.
+- Ошибки API: проверьте `XMLRIVER_USER_ID`, `XMLRIVER_API_KEY`, `SERPRIVER_API_KEY` и баланс сервиса.
+- Ошибка занятости поисковых ботов XMLRiver при большом списке ключей: проверьте, что используется свежая версия программы и `XMLRIVER_MAX_CONCURRENCY` не выше допустимого лимита аккаунта.
 
 ## Лицензия
 

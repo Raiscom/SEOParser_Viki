@@ -29,7 +29,8 @@ class XmlRiverClient:
         self.user_id = user_id
         self.api_key = api_key
         self.timeout = ClientTimeout(connect=connect_timeout, sock_read=read_timeout)
-        self.semaphore = asyncio.Semaphore(max_concurrency)
+        self.batch_size = max(1, int(max_concurrency))
+        self.semaphore = asyncio.Semaphore(self.batch_size)
 
     async def fetch_queries(
         self,
@@ -40,20 +41,22 @@ class XmlRiverClient:
     ) -> list[XmlRiverResult]:
         """Выполняет пакет запросов и возвращает плоский список результатов."""
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            tasks = [
-                asyncio.create_task(self._fetch_indexed_query(session, index, query, engine, params))
-                for index, query in enumerate(queries)
-            ]
             indexed_results: dict[int, list[XmlRiverResult]] = {}
-            total_queries = len(tasks)
+            total_queries = len(queries)
             completed_queries = 0
-            for task in asyncio.as_completed(tasks):
-                index, query_results = await task
-                indexed_results[index] = query_results
-                completed_queries += 1
-                current_query = query_results[0].query if query_results else ""
-                if progress_callback is not None:
-                    progress_callback(completed_queries, total_queries, current_query)
+            for batch_start in range(0, total_queries, self.batch_size):
+                batch_queries = queries[batch_start : batch_start + self.batch_size]
+                tasks = [
+                    asyncio.create_task(self._fetch_indexed_query(session, batch_start + offset, query, engine, params))
+                    for offset, query in enumerate(batch_queries)
+                ]
+                for task in asyncio.as_completed(tasks):
+                    index, query_results = await task
+                    indexed_results[index] = query_results
+                    completed_queries += 1
+                    current_query = query_results[0].query if query_results else ""
+                    if progress_callback is not None:
+                        progress_callback(completed_queries, total_queries, current_query)
         ordered_results = [indexed_results[index] for index in sorted(indexed_results)]
         return [item for group in ordered_results for item in group]
 
@@ -67,27 +70,29 @@ class XmlRiverClient:
         """Checks whether the target domain appears in Yandex XMLRiver results for each query."""
         normalized_target_domain = normalize_domain(target_domain)
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            tasks = [
-                asyncio.create_task(
-                    self._fetch_indexed_domain_top_query(
-                        session,
-                        index,
-                        query,
-                        normalized_target_domain,
-                        params,
-                    ),
-                )
-                for index, query in enumerate(queries)
-            ]
             indexed_results: dict[int, XmlRiverDomainTopResult] = {}
-            total_queries = len(tasks)
+            total_queries = len(queries)
             completed_queries = 0
-            for task in asyncio.as_completed(tasks):
-                index, query_result = await task
-                indexed_results[index] = query_result
-                completed_queries += 1
-                if progress_callback is not None:
-                    progress_callback(completed_queries, total_queries, query_result.query)
+            for batch_start in range(0, total_queries, self.batch_size):
+                batch_queries = queries[batch_start : batch_start + self.batch_size]
+                tasks = [
+                    asyncio.create_task(
+                        self._fetch_indexed_domain_top_query(
+                            session,
+                            batch_start + offset,
+                            query,
+                            normalized_target_domain,
+                            params,
+                        ),
+                    )
+                    for offset, query in enumerate(batch_queries)
+                ]
+                for task in asyncio.as_completed(tasks):
+                    index, query_result = await task
+                    indexed_results[index] = query_result
+                    completed_queries += 1
+                    if progress_callback is not None:
+                        progress_callback(completed_queries, total_queries, query_result.query)
         return [indexed_results[index] for index in sorted(indexed_results)]
 
     async def _fetch_indexed_query(
